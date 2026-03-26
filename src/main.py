@@ -1,12 +1,10 @@
 import cv2
 import math
-from detector import HandGestureDetector, is_fist
+from detector import HandGestureDetector
 from robot_controller import RobotController
 
 def main():
     detector = HandGestureDetector(model_path="hand_landmarker.task")
-    fingertip_indices = [4, 8, 12, 16, 20]
-    finger_names = ["Thumb", "Index", "Middle", "Ring", "Pinky"]
 
     cap = cv2.VideoCapture(0)
 
@@ -56,7 +54,7 @@ def main():
                     current_hand_label = handedness_list[hand_idx][0].category_name if (handedness_list and len(handedness_list) > hand_idx) else "Unknown"
                     
                     if state == "IDLE":
-                        if is_fist(hand_landmarks, w, h):
+                        if detector.is_fist(hand_landmarks, w, h):
                             center_lm = hand_landmarks[9] 
                             baseline_center = (int(center_lm.x * w), int(center_lm.y * h))
                             wrist = hand_landmarks[0]
@@ -84,34 +82,43 @@ def main():
                         cv2.putText(frame, "CONTROL BOX", (top_left[0], top_left[1] - 10), 
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1, cv2.LINE_AA)
 
-                        # Draw fingertips
-                        for i, index in enumerate(fingertip_indices):
-                            landmark = hand_landmarks[index]
-                            lx, ly = int(landmark.x * w), int(landmark.y * h)
-                            cv2.circle(frame, (lx, ly), 10, (0, 255, 0), cv2.FILLED)
-                            cv2.putText(frame, finger_names[i], (lx - 15, ly - 15), 
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
+                        # Get and Draw fingertips using the API
+                        tips = detector.get_fingertips(hand_landmarks, w, h)
+                        for name, (lx, ly) in tips.items():
+                            # VISUAL FEEDBACK: Change color to red if outside the control box
+                            is_outside = (lx < top_left[0] or lx > bottom_right[0] or 
+                                          ly < top_left[1] or ly > bottom_right[1])
+                            dot_color = (0, 0, 255) if is_outside else (0, 255, 0)
+                            
+                            cv2.circle(frame, (lx, ly), 10, dot_color, cv2.FILLED)
+                            cv2.putText(frame, name, (lx - 15, ly - 15), 
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, dot_color, 1, cv2.LINE_AA)
                         
-                        # GRIPPER CONTROL
-                        thumb_tip = hand_landmarks[4]
-                        index_tip = hand_landmarks[8]
-                        
-                        thumb_x, thumb_y = thumb_tip.x * w, thumb_tip.y * h
-                        index_x, index_y = index_tip.x * w, index_tip.y * h
-                        
+                        # --- RATE-BASED GRIPPER CONTROL with DEADZONE ---
+                        thumb_x, thumb_y = tips["Thumb"]
+                        index_x, index_y = tips["Index"]
                         pinch_distance = math.hypot(thumb_x - index_x, thumb_y - index_y)
                         box_width = baseline_box_half_size * 2
                         
-                        # --- CONTINUOUS GRIPPER CONTROL LOGIC with SMOOTHING ---
-                        # Map pinch distance from [0.25*width to 0.75*width] into [100.0 to 0.0]
-                        normalized_pinch = (pinch_distance - 0.25 * box_width) / (0.5 * box_width)
-                        normalized_pinch = max(0.0, min(1.0, normalized_pinch))
+                        # Normalize pinch: 0.0 (touching) to 1.0 (full box width)
+                        norm_pinch = pinch_distance / box_width
                         
-                        # Target is inverted: 100 (closed) when pinch is small, 0 (open) when pinch is large
-                        target_gripper = 100.0 - (normalized_pinch * 100.0)
+                        # Initial target is the current position
+                        target_pos = robot.current_action["gripper.pos"]
                         
-                        # Apply with exponential smoothing (alpha 0.15 makes it smooth out jitter)
-                        robot.set_gripper(target_gripper, alpha=0.15)
+                        if norm_pinch < 0.25:
+                            # CLOSE: The tighter the pinch (<25%), the faster it closes
+                            # Speed scale: 0 at 0.25, max at 0.0
+                            intensity = (0.25 - norm_pinch) / 0.25
+                            target_pos += (5.0 * intensity) # Max 5 units per frame closure
+                        elif norm_pinch > 0.60:
+                            # OPEN: The wider the hand (>60%), the faster it opens
+                            # Speed scale: 0 at 0.60, max at 1.0 (clamped)
+                            intensity = (min(1.0, norm_pinch) - 0.60) / 0.25
+                            target_pos -= (5.0 * intensity) # Max 5 units per frame opening
+                        
+                        # Apply with smoothing (reusing the smoothed set_gripper method)
+                        robot.set_gripper(target_pos, alpha=0.2)
                         
                 cv2.putText(frame, f"STATE: {state}", (20, 40), 
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0) if state == "ACTIVE" else (0, 0, 255), 2, cv2.LINE_AA)

@@ -1,0 +1,4 @@
+opencv-python<4.9
+numpy<2.0.0
+mediapipe
+lerobot[feetech]

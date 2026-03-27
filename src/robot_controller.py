@@ -118,3 +118,18 @@ class RobotController:
             if self.robot:
                 self.robot.send_action(self.current_action)
             print(f"Shoulder Pan Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)
+
+    def set_wrist_roll(self, target_pos, alpha=0.1):
+        # Apply exponential moving average smoothing
+        current = self.current_action["wrist_roll.pos"]
+        smoothed_pos = (alpha * target_pos) + ((1.0 - alpha) * current)
+        
+        # Clamp between -180 and 180 (typical range for SO-101 wrist roll)
+        smoothed_pos = max(-180.0, min(180.0, smoothed_pos))
+        
+        # Only send command if position meaningfully changed
+        if abs(smoothed_pos - current) > 0.1:
+            self.current_action["wrist_roll.pos"] = smoothed_pos
+            if self.robot:
+                self.robot.send_action(self.current_action)
+            print(f"Wrist Roll Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)

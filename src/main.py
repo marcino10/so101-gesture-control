@@ -225,6 +225,39 @@ def main():
                             pan_target -= (3.0 * intensity)
                         
                         robot.set_shoulder_pan(pan_target, alpha=0.1)
+
+                        # --- WRIST ROLL CONTROL ---
+                        # Use angle between thumb and index
+                        # baseline is vertical (-90 deg in screen coords)
+                        current_angle_rad = math.atan2(index_y - thumb_y, index_x - thumb_x)
+                        current_angle_deg = math.degrees(current_angle_rad)
+                        
+                        # Target is "Straight Line" (vertical = -90)
+                        # Deviation from neutral vertical
+                        roll_deviation = current_angle_deg + 90
+                        # Normalize to -180 to 180
+                        roll_deviation = (roll_deviation + 180) % 360 - 180
+                        
+                        # Visualize Rotation info
+                        roll_label = f"ROLL: {roll_deviation:+.1f}"
+                        cv2.putText(frame, roll_label, (cx - 40, cy + baseline_box_half_size + 20),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 100, 255), 1)
+                        
+                        roll_target = robot.current_action["wrist_roll.pos"]
+                        # Deadzone of 20 degrees
+                        if abs(roll_deviation) > 25:
+                            # Intensity based on how much you rotate beyond 20 deg
+                            intensity = min(1.0, (abs(roll_deviation) - 20) / 40.0)
+                            # Sign: CW rotation (positive deviation) increases roll? 
+                            # We'll adjust based on mirror. If MIRROR_VIDEO, CW is CW.
+                            if MIRROR_VIDEO:
+                                direction = 1 if roll_deviation > 0 else -1
+                            else:
+                                direction = -1 if roll_deviation > 0 else 1
+                                
+                            roll_target += (5.0 * intensity * direction)
+                        
+                        robot.set_wrist_roll(roll_target, alpha=0.1)
                         
                 cv2.putText(frame, f"STATE: {state}", (20, 40), 
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0) if state == "ACTIVE" else (0, 0, 255), 2, cv2.LINE_AA)

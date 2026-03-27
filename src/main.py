@@ -3,6 +3,10 @@ import math
 from detector import HandGestureDetector
 from robot_controller import RobotController
 
+# --- CONFIGURATION ---
+MIRROR_VIDEO = True  # Set to True if your camera is physically mirrored
+# ---------------------
+
 def main():
     detector = HandGestureDetector(model_path="hand_landmarker.task")
 
@@ -29,7 +33,8 @@ def main():
                 print("Ignoring empty camera frame.")
                 continue
 
-            frame = cv2.flip(frame, 1)
+            if MIRROR_VIDEO:
+                frame = cv2.flip(frame, 1)
             h, w, _ = frame.shape
 
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -52,6 +57,10 @@ def main():
                 for hand_idx, hand_landmarks in enumerate(detection_result.hand_landmarks):
                     handedness_list = detection_result.handedness
                     current_hand_label = handedness_list[hand_idx][0].category_name if (handedness_list and len(handedness_list) > hand_idx) else "Unknown"
+                    
+                    # If video is mirrored, MediaPipe's reported handedness is flipped
+                    if MIRROR_VIDEO and current_hand_label != "Unknown":
+                        current_hand_label = "Left" if current_hand_label == "Right" else "Right"
                     
                     if state == "IDLE":
                         if detector.is_fist(hand_landmarks, w, h):
@@ -119,6 +128,103 @@ def main():
                         
                         # Apply with smoothing (reusing the smoothed set_gripper method)
                         robot.set_gripper(target_pos, alpha=0.2)
+                        
+                        # --- MULTI-JOINT CONTROL (Shoulder, Elbow, Wrist) ---
+                        # Finger Selection: 1=Shoulder, 2=Elbow, 3=Wrist
+                        extended = detector.get_extended_fingers(hand_landmarks, w, h)
+                        # We only care about Index, Middle, Ring for joint selection
+                        active_fingers = [f for f in extended if f in ["Index", "Middle", "Ring"]]
+                        num_active = len(active_fingers)
+                        
+                        # Trigger bounds are centered at 'cy' and expand as the hand opens
+                        base_deadzone = baseline_box_half_size * 0.4
+                        dynamic_offset = baseline_box_half_size * 1.2 * norm_pinch
+                        total_deadzone = base_deadzone + dynamic_offset
+                        
+                        upper_bound = cy - total_deadzone
+                        lower_bound = cy + total_deadzone - pinch_distance
+                        
+                        # Visualize trigger bounds (wide lines)
+                        line_half_width = max(baseline_box_half_size, int(total_deadzone * 0.5))
+                        cv2.line(frame, (cx - line_half_width, int(upper_bound)), 
+                                 (cx + line_half_width, int(upper_bound)), (255, 255, 0), 2)
+                        cv2.line(frame, (cx - line_half_width, int(lower_bound)), 
+                                 (cx + line_half_width, int(lower_bound)), (0, 255, 255), 2)
+                        
+                        if num_active > 0:
+                            # Calculate average Y of active selection fingers
+                            avg_y = sum(tips[f][1] for f in active_fingers) / num_active
+                            
+                            # Joint Mapping
+                            if num_active == 1:
+                                joint_name = "shoulder_lift.pos"
+                                set_func = robot.set_shoulder_lift
+                                label = "SHOULDER"
+                            elif num_active == 2:
+                                joint_name = "elbow_flex.pos"
+                                set_func = robot.set_elbow_flex
+                                label = "ELBOW"
+                            else: # 3 or more
+                                joint_name = "wrist_flex.pos"
+                                set_func = robot.set_wrist_flex
+                                label = "WRIST"
+                            
+                            cv2.putText(frame, f"CONTROL: {label}", (cx - baseline_box_half_size, int(upper_bound) - 10), 
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                            
+                            target_pos = robot.current_action[joint_name]
+                            if avg_y < upper_bound:
+                                # LIFT: Fast if higher
+                                intensity = min(1.0, (upper_bound - avg_y) / (baseline_box_half_size * 0.4))
+                                target_pos += (3.0 * intensity)
+                            elif avg_y > lower_bound:
+                                # LOWER: Fast if lower
+                                intensity = min(1.0, (avg_y - lower_bound) / (baseline_box_half_size * 0.4))
+                                target_pos -= (3.0 * intensity)
+                            
+                            set_func(target_pos, alpha=0.1)
+
+                        # --- SHOULDER PAN CONTROL ---
+                        # Fixed horizontal bounds (not scaling with pinch)
+                        deadzone_x = baseline_box_half_size * 0.7
+                        left_bound = cx - deadzone_x
+                        right_bound = cx + deadzone_x
+                        
+                        # Determine labels and directions based on MIRROR_VIDEO
+                        if MIRROR_VIDEO:
+                            left_label, right_label = "RIGHT", "LEFT"
+                            pan_left_condition = (min(index_x, thumb_x) < left_bound)
+                            pan_right_condition = (max(index_x, thumb_x) > right_bound)
+                            left_intensity = (left_bound - min(index_x, thumb_x)) / (baseline_box_half_size * 0.3)
+                            right_intensity = (max(index_x, thumb_x) - right_bound) / (baseline_box_half_size * 0.3)
+                        else:
+                            left_label, right_label = "LEFT", "RIGHT"
+                            pan_right_condition = (min(index_x, thumb_x) < left_bound)
+                            pan_left_condition = (max(index_x, thumb_x) > right_bound)
+                            right_intensity = (left_bound - min(index_x, thumb_x)) / (baseline_box_half_size * 0.3)
+                            left_intensity = (max(index_x, thumb_x) - right_bound) / (baseline_box_half_size * 0.3)
+
+                        # Visualize horizontal trigger bounds with correct labels for the user's perspective
+                        cv2.line(frame, (int(left_bound), cy - baseline_box_half_size), 
+                                 (int(left_bound), cy + baseline_box_half_size), (0, 0, 255), 2)
+                        cv2.line(frame, (int(right_bound), cy - baseline_box_half_size), 
+                                 (int(right_bound), cy + baseline_box_half_size), (0, 0, 255), 2)
+                        cv2.putText(frame, left_label, (int(left_bound) - 40, cy), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+                        cv2.putText(frame, right_label, (int(right_bound) + 5, cy), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+
+                        pan_target = robot.current_action["shoulder_pan.pos"]
+                        if pan_left_condition:
+                            # MOVE LEFT (increase pan)
+                            intensity = min(1.0, left_intensity)
+                            pan_target += (3.0 * intensity)
+                        elif pan_right_condition:
+                            # MOVE RIGHT (decrease pan)
+                            intensity = min(1.0, right_intensity)
+                            pan_target -= (3.0 * intensity)
+                        
+                        robot.set_shoulder_pan(pan_target, alpha=0.1)
                         
                 cv2.putText(frame, f"STATE: {state}", (20, 40), 
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0) if state == "ACTIVE" else (0, 0, 255), 2, cv2.LINE_AA)

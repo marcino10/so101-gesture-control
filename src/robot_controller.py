@@ -58,3 +58,63 @@ class RobotController:
             if self.robot:
                 self.robot.send_action(self.current_action)
             print(f"Gripper Pos Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)
+
+    def set_shoulder_lift(self, target_pos, alpha=0.1):
+        # Apply exponential moving average smoothing
+        current = self.current_action["shoulder_lift.pos"]
+        smoothed_pos = (alpha * target_pos) + ((1.0 - alpha) * current)
+        
+        # Clamp between -90 and 90 (typical range for SO-101 shoulder lift)
+        smoothed_pos = max(-90.0, min(90.0, smoothed_pos))
+        
+        # Only send command if position meaningfully changed
+        if abs(smoothed_pos - current) > 0.1:
+            self.current_action["shoulder_lift.pos"] = smoothed_pos
+            if self.robot:
+                self.robot.send_action(self.current_action)
+            print(f"Shoulder Lift Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)
+
+    def set_elbow_flex(self, target_pos, alpha=0.1):
+        # Apply exponential moving average smoothing
+        current = self.current_action["elbow_flex.pos"]
+        smoothed_pos = (alpha * target_pos) + ((1.0 - alpha) * current)
+        
+        # Clamp between 0 and 180 (typical range for SO-101 elbow)
+        smoothed_pos = max(0.0, min(180.0, smoothed_pos))
+        
+        # Only send command if position meaningfully changed
+        if abs(smoothed_pos - current) > 0.1:
+            self.current_action["elbow_flex.pos"] = smoothed_pos
+            if self.robot:
+                self.robot.send_action(self.current_action)
+            print(f"Elbow Flex Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)
+
+    def set_wrist_flex(self, target_pos, alpha=0.1):
+        # Apply exponential moving average smoothing
+        current = self.current_action["wrist_flex.pos"]
+        smoothed_pos = (alpha * target_pos) + ((1.0 - alpha) * current)
+        
+        # Clamp between -90 and 90 (typical range for SO-101 wrist flex)
+        smoothed_pos = max(-90.0, min(90.0, smoothed_pos))
+        
+        # Only send command if position meaningfully changed
+        if abs(smoothed_pos - current) > 0.1:
+            self.current_action["wrist_flex.pos"] = smoothed_pos
+            if self.robot:
+                self.robot.send_action(self.current_action)
+            print(f"Wrist Flex Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)
+
+    def set_shoulder_pan(self, target_pos, alpha=0.1):
+        # Apply exponential moving average smoothing
+        current = self.current_action["shoulder_pan.pos"]
+        smoothed_pos = (alpha * target_pos) + ((1.0 - alpha) * current)
+        
+        # Clamp between -90 and 90 (typical range for SO-101 shoulder pan)
+        smoothed_pos = max(-90.0, min(90.0, smoothed_pos))
+        
+        # Only send command if position meaningfully changed
+        if abs(smoothed_pos - current) > 0.1:
+            self.current_action["shoulder_pan.pos"] = smoothed_pos
+            if self.robot:
+                self.robot.send_action(self.current_action)
+            print(f"Shoulder Pan Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)

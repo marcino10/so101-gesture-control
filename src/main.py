@@ -37,6 +37,13 @@ def main():
                 frame = cv2.flip(frame, 1)
             h, w, _ = frame.shape
 
+            # Draw 3x3 Grid (subtle overlay)
+            for i in range(1, 3):
+                # Vertical
+                cv2.line(frame, (i * w // 3, 0), (i * w // 3, h), (80, 80, 80), 1)
+                # Horizontal
+                cv2.line(frame, (0, i * h // 3), (w, i * h // 3), (80, 80, 80), 1)
+
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             detection_result = detector.process(rgb_frame)
 

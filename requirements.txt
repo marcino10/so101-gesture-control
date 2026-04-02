@@ -1,3 +1,6 @@
 opencv-python>=4.10
 mediapipe
 lerobot[feetech]
+foxglove-sdk
+yourdfpy
+scipy

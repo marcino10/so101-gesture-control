@@ -1,5 +1,14 @@
 from lerobot.robots.so_follower import SOFollower
 from lerobot.robots.so_follower import SOFollowerRobotConfig
+import os
+import sys
+
+# Attempt to import the visualizer
+try:
+    from visualizer import FoxgloveVisualizer
+except ImportError:
+    FoxgloveVisualizer = None
+
 
 class RobotController:
     def __init__(self, port="/dev/ttyACM0"):
@@ -9,6 +18,7 @@ class RobotController:
         )
         self.robot = SOFollower(self.config)
         self.current_action = {}
+        self.visualizer = None
         
     def __enter__(self):
         try:
@@ -37,6 +47,15 @@ class RobotController:
                 "wrist_roll.pos": 0.0,
                 "gripper.pos": 50.0
             }
+            if FoxgloveVisualizer:
+                # Resolve URDF path assuming we run from src/ or project root
+                urdf_path = "so101_simulation/so101_new_calib.urdf" if os.path.exists("so101_simulation/so101_new_calib.urdf") else "src/so101_simulation/so101_new_calib.urdf"
+                try:
+                    self.visualizer = FoxgloveVisualizer(urdf_path)
+                    print(f"Visualizer started with URDF: {urdf_path}")
+                except Exception as viz_err:
+                    print(f"Could not start visualizer: {viz_err}")
+                    
         return self
         
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -57,6 +76,8 @@ class RobotController:
             self.current_action["gripper.pos"] = smoothed_pos
             if self.robot:
                 self.robot.send_action(self.current_action)
+            elif self.visualizer:
+                self.visualizer.update_visualization(self.current_action)
             print(f"Gripper Pos Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)
 
     def set_shoulder_lift(self, target_pos, alpha=0.1):
@@ -72,6 +93,8 @@ class RobotController:
             self.current_action["shoulder_lift.pos"] = smoothed_pos
             if self.robot:
                 self.robot.send_action(self.current_action)
+            elif self.visualizer:
+                self.visualizer.update_visualization(self.current_action)
             print(f"Shoulder Lift Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)
 
     def set_elbow_flex(self, target_pos, alpha=0.1):
@@ -87,6 +110,8 @@ class RobotController:
             self.current_action["elbow_flex.pos"] = smoothed_pos
             if self.robot:
                 self.robot.send_action(self.current_action)
+            elif self.visualizer:
+                self.visualizer.update_visualization(self.current_action)
             print(f"Elbow Flex Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)
 
     def set_wrist_flex(self, target_pos, alpha=0.1):
@@ -102,6 +127,8 @@ class RobotController:
             self.current_action["wrist_flex.pos"] = smoothed_pos
             if self.robot:
                 self.robot.send_action(self.current_action)
+            elif self.visualizer:
+                self.visualizer.update_visualization(self.current_action)
             print(f"Wrist Flex Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)
 
     def set_shoulder_pan(self, target_pos, alpha=0.1):
@@ -117,6 +144,8 @@ class RobotController:
             self.current_action["shoulder_pan.pos"] = smoothed_pos
             if self.robot:
                 self.robot.send_action(self.current_action)
+            elif self.visualizer:
+                self.visualizer.update_visualization(self.current_action)
             print(f"Shoulder Pan Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)
 
     def set_wrist_roll(self, target_pos, alpha=0.1):
@@ -132,4 +161,6 @@ class RobotController:
             self.current_action["wrist_roll.pos"] = smoothed_pos
             if self.robot:
                 self.robot.send_action(self.current_action)
+            elif self.visualizer:
+                self.visualizer.update_visualization(self.current_action)
             print(f"Wrist Roll Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)

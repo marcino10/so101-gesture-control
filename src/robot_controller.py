@@ -164,3 +164,24 @@ class RobotController:
             elif self.visualizer:
                 self.visualizer.update_visualization(self.current_action)
             print(f"Wrist Roll Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)
+
+    def set_target_joints(self, target_dict, alpha_dict=None):
+        """
+        Receives a dictionary of target joint angles and routes them to 
+        safely smoothed individual setters.
+        """
+        if alpha_dict is None:
+            alpha_dict = {}
+            
+        if "gripper.pos" in target_dict:
+            self.set_gripper(target_dict["gripper.pos"], alpha_dict.get("gripper.pos", 0.2))
+        if "shoulder_lift.pos" in target_dict:
+            self.set_shoulder_lift(target_dict["shoulder_lift.pos"], alpha_dict.get("shoulder_lift.pos", 0.1))
+        if "elbow_flex.pos" in target_dict:
+            self.set_elbow_flex(target_dict["elbow_flex.pos"], alpha_dict.get("elbow_flex.pos", 0.1))
+        if "wrist_flex.pos" in target_dict:
+            self.set_wrist_flex(target_dict["wrist_flex.pos"], alpha_dict.get("wrist_flex.pos", 0.1))
+        if "shoulder_pan.pos" in target_dict:
+            self.set_shoulder_pan(target_dict["shoulder_pan.pos"], alpha_dict.get("shoulder_pan.pos", 0.1))
+        if "wrist_roll.pos" in target_dict:
+            self.set_wrist_roll(target_dict["wrist_roll.pos"], alpha_dict.get("wrist_roll.pos", 0.1))

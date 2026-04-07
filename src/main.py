@@ -61,16 +61,25 @@ def main():
             detection_result = detector.latest_result
             pose_result = pose_detector.latest_result
             
-            # --- Visualize Pose Landmarks (Shoulders, Elbows) ---
+            # --- Visualize Pose Landmarks (Shoulders, Elbows, Wrists) ---
             if pose_result and pose_result.pose_landmarks:
                 for pose_landmarks in pose_result.pose_landmarks:
-                    # 11: left shoulder, 12: right shoulder, 13: left elbow, 14: right elbow
-                    for lm_idx in [11, 12, 13, 14]:
-                        lm = pose_landmarks[lm_idx]
-                        px, py = int(lm.x * w), int(lm.y * h)
-                        cv2.circle(frame, (px, py), 10, (255, 100, 0), cv2.FILLED)
-                        label = {11:"L-Shoulder", 12:"R-Shoulder", 13:"L-Elbow", 14:"R-Elbow"}[lm_idx]
-                        cv2.putText(frame, label, (px + 15, py), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 200, 0), 1)
+                    # Draw Pose Connections
+                    pose_connections = [(11, 12), (11, 13), (13, 15), (12, 14), (14, 16)]
+                    for (i, j) in pose_connections:
+                        if i < len(pose_landmarks) and j < len(pose_landmarks):
+                            x1, y1 = int(pose_landmarks[i].x * w), int(pose_landmarks[i].y * h)
+                            x2, y2 = int(pose_landmarks[j].x * w), int(pose_landmarks[j].y * h)
+                            cv2.line(frame, (x1, y1), (x2, y2), (255, 150, 0), 2)
+
+                    # Draw Joints
+                    for lm_idx in [11, 12, 13, 14, 15, 16]:
+                        if lm_idx < len(pose_landmarks):
+                            lm = pose_landmarks[lm_idx]
+                            px, py = int(lm.x * w), int(lm.y * h)
+                            cv2.circle(frame, (px, py), 8, (255, 100, 0), cv2.FILLED)
+                            label = {11:"L-Should", 12:"R-Should", 13:"L-Elbow", 14:"R-Elbow", 15:"L-Wrist", 16:"R-Wrist"}.get(lm_idx, "")
+                            cv2.putText(frame, label, (px + 15, py), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 200, 0), 1)
 
             # Handle State Reset if hands disappear
             if not detection_result or not detection_result.hand_landmarks:
@@ -127,6 +136,20 @@ def main():
                         cv2.circle(frame, baseline_center, 5, (255, 0, 0), cv2.FILLED)
                         cv2.putText(frame, "CONTROL BOX", (top_left[0], top_left[1] - 10), 
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1, cv2.LINE_AA)
+
+                        # Draw Hand connections
+                        hand_connections = [
+                            (0, 1), (1, 2), (2, 3), (3, 4),      # thumb
+                            (0, 5), (5, 6), (6, 7), (7, 8),      # index
+                            (5, 9), (9, 10), (10, 11), (11, 12), # middle
+                            (9, 13), (13, 14), (14, 15), (15, 16), # ring
+                            (13, 17), (17, 18), (18, 19), (19, 20), # pinky
+                            (0, 17) # wrist to pinky base
+                        ]
+                        for (i, j) in hand_connections:
+                            x1, y1 = int(hand_landmarks[i].x * w), int(hand_landmarks[i].y * h)
+                            x2, y2 = int(hand_landmarks[j].x * w), int(hand_landmarks[j].y * h)
+                            cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
                         # Draw all landmarks
                         for lm in hand_landmarks:

@@ -103,7 +103,7 @@ class RobotController:
         smoothed_pos = (alpha * target_pos) + ((1.0 - alpha) * current)
         
         # Clamp between 0 and 180 (typical range for SO-101 elbow)
-        smoothed_pos = max(0.0, min(180.0, smoothed_pos))
+        smoothed_pos = max(-90.0, min(90.0, smoothed_pos))
         
         # Only send command if position meaningfully changed
         if abs(smoothed_pos - current) > 0.1:

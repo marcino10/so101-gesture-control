@@ -27,6 +27,7 @@ def main():
     missing_frames = 0
     locked_hand_label = None
     prev_rel_depth = None
+    baseline_wrist_y = None
 
     # Connect to the robot automatically, using a context manager
     with RobotController(port="/dev/ttyACM0") as robot:
@@ -113,6 +114,7 @@ def main():
                     baseline_center = None
                     locked_hand_label = None
                     prev_rel_depth = None
+                    baseline_wrist_y = None
                     detector.activation_tracker.reset()
                 
                 cv2.putText(frame, f"STATE: {state}", (20, 40), 
@@ -145,6 +147,10 @@ def main():
                                 
                             state = "ACTIVE"
                             locked_hand_label = current_hand_label
+                            
+                            # Set baseline wrist_y for elbow control to 1/4 of the screen height (fixed anchor)
+                            baseline_wrist_y = 0.25
+
                             print(f"\n>>> OPEN-CLOSE-OPEN DETECTED: Locked onto {locked_hand_label} Hand. <<<")
                     
                     if state == "ACTIVE" and baseline_center:
@@ -237,6 +243,37 @@ def main():
                                 cx_w, cy_w = int(wrist.x * w), int(wrist.y * h)
                                 cv2.line(frame, (cx_e, cy_e), (cx_w, cy_w), (0, 255, 255), 3)
 
+                                # --- Elbow Flex Control (Dynamic Sensitivity: Baseline = -10, Camera Bottom = +90) ---
+                                if baseline_wrist_y is not None:
+                                    # Use hand wrist (landmark 0) for more stable tracking
+                                    hand_wrist_y = hand_landmarks[0].y
+                                    # dy is positive when hand is BELOW baseline
+                                    dy = hand_wrist_y - baseline_wrist_y
+                                    
+                                    # Calculate available space between baseline and camera bottom (1.0)
+                                    available_space = max(0.01, 1.0 - baseline_wrist_y)
+                                    
+                                    # Baseline (dy=0) maps to -10. 
+                                    # Moving DOWN (dy > 0) INCREASES angle towards +90 over available_space.
+                                    if dy > 0:
+                                        # (dy / available_space) is percentage of distance to bottom
+                                        val = -90.0 + (dy / available_space * 1.4) * 180
+                                    else:
+                                        val = -90.0 # At or above baseline, min at -10
+                                    
+                                    # Clamp and apply stepping
+                                    capped_val = max(-90.0, min(90.0, val))
+                                    elbow_flex_target = round(capped_val / 3.0) * 3.0
+                                    
+                                    target_joints["elbow_flex.pos"] = elbow_flex_target
+                                    alpha_dict["elbow_flex.pos"] = 0.1
+                                    
+                                    # HUD: draw baseline height line
+                                    by_px = int(baseline_wrist_y * h)
+                                    cv2.line(frame, (0, by_px), (w, by_px), (255, 255, 0), 1, cv2.LINE_AA)
+                                    cv2.putText(frame, "ELBOW BASE", (10, by_px - 10), 
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+
                         # --- Shoulder Lift Control (relative depth: wrist vs shoulder) ---
                         # Uses Depth Anything V2 depth map.
                         # Relative depth = wrist_depth - shoulder_depth:
@@ -277,7 +314,7 @@ def main():
                                     wrist_offset = 0.2
                                     rel_depth = max(0, abs(wrist_depth - base_ref) - wrist_offset)
 
-                                    # Delta Deadzone: only move if change > 0.06
+                                    # Delta Deadzone: only move if change > 0.02
                                     if prev_rel_depth is None or abs(rel_depth - prev_rel_depth) > 0.02:
                                         prev_rel_depth = rel_depth
                                         

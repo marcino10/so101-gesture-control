@@ -86,7 +86,7 @@ class HandGestureDetector:
         return closed_count >= 3
 
     def is_hand_open(self, hand_world_landmarks):
-        """Checks if hand is mostly open."""
+        """Checks if hand is fully spread open."""
         wrist = hand_world_landmarks[0]
         finger_tips = [8, 12, 16, 20]
         finger_mcps = [5, 9, 13, 17]
@@ -96,10 +96,10 @@ class HandGestureDetector:
             mcp = hand_world_landmarks[mcp_idx]
             tip_d = math.hypot(tip.x - wrist.x, tip.y - wrist.y)
             mcp_d = math.hypot(mcp.x - wrist.x, mcp.y - wrist.y)
-            # Tip should be significantly further out than knuckle
-            if tip_d > mcp_d + 0.02: 
+            # Tip should be significantly further out than knuckle (larger threshold for wider spread)
+            if tip_d > mcp_d + 0.05: 
                 open_count += 1
-        return open_count >= 3
+        return open_count >= 4
 
     def check_activation_sequence(self, hand_world_landmarks):
         """Updates internal sequence tracker and returns True if 'open-close-open'."""

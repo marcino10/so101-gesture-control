@@ -173,7 +173,47 @@ def main():
                         target_joints["gripper.pos"] = 100.0 - gripper_target # invert so pinched == closed
                         
                         # Dispatch all mapped joints back to controller
-                        robot.set_target_joints(target_joints, alpha_dict={"gripper.pos": 0.2})
+                        alpha_dict = {"gripper.pos": 0.2}
+                        
+                        # --- Shoulder Pan Control ---
+                        # Semi-mirroring rotation of the arm: if wrist is to the right of the elbow, rotate right.
+                        if pose_result and pose_result.pose_landmarks:
+                            pl = pose_result.pose_landmarks[0]
+                            is_physical_right = (locked_hand_label == "Right")
+                            
+                            # MediaPipe Pose labeling on a mirrored frame interprets physical right as left.
+                            if MIRROR_VIDEO:
+                                elbow_idx = 13 if is_physical_right else 14
+                                wrist_idx = 15 if is_physical_right else 16
+                            else:
+                                elbow_idx = 14 if is_physical_right else 13
+                                wrist_idx = 16 if is_physical_right else 15
+                                
+                            if elbow_idx < len(pl) and wrist_idx < len(pl):
+                                elbow = pl[elbow_idx]
+                                wrist = pl[wrist_idx]
+                                
+                                # dx tells us horizontal offsets. (Positive means wrist to the right in the image overlay)
+                                dx = wrist.x - elbow.x
+                                
+                                # Typical dx for wrist-elbow rotation spans around roughly -0.15 to +0.15 in image space.
+                                # Let's map dx to -90 to 90 degrees.
+                                # An external multiplier controls sensitivity.
+                                pan_target = (dx / 0.15) * 90.0
+                                
+                                # If needed, you can invert the pan_target by multiplying by -1. 
+                                # Clamping within healthy robot limits.
+                                pan_target = max(-90.0, min(90.0, pan_target))
+                                
+                                target_joints["shoulder_pan.pos"] = pan_target
+                                alpha_dict["shoulder_pan.pos"] = 0.1
+
+                                # Draw a visual line indicating the vector being mapped
+                                cx_e, cy_e = int(elbow.x * w), int(elbow.y * h)
+                                cx_w, cy_w = int(wrist.x * w), int(wrist.y * h)
+                                cv2.line(frame, (cx_e, cy_e), (cx_w, cy_w), (0, 255, 255), 3)
+                        
+                        robot.set_target_joints(target_joints, alpha_dict=alpha_dict)
                         
                 cv2.putText(frame, f"STATE: {state}", (20, 40), 
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0) if state == "ACTIVE" else (0, 0, 255), 2, cv2.LINE_AA)

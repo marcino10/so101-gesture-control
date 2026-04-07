@@ -1,6 +1,8 @@
 import os
+import threading
 import urllib.request
 import math
+import numpy as np
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
@@ -152,3 +154,86 @@ class ArmPoseDetector:
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
         self.detector.detect_async(mp_image, timestamp_ms)
 
+
+class MonocularDepthEstimator:
+    """
+    Runs Depth Anything V2 Small via HuggingFace Transformers in a background
+    thread so the camera loop is never blocked.
+
+    depth_map : normalised HxW float32 array (0=far, 1=close)
+    get_depth(key, px, py) : EMA-smoothed depth at pixel (px, py)
+    """
+
+    EMA_ALPHA = 0.25  # higher = more responsive but more jitter
+
+    def __init__(self, device: str | None = None):
+        import torch
+        from transformers import pipeline as hf_pipeline
+
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        self._device = device
+        print(f"[MonocularDepthEstimator] Loading Depth Anything V2 Small on {device}...")
+        self._pipe = hf_pipeline(
+            task="depth-estimation",
+            model="depth-anything/Depth-Anything-V2-Small-hf",
+            device=0 if device == "cuda" else -1,
+        )
+        print("[MonocularDepthEstimator] Model loaded.")
+
+        self.depth_map: np.ndarray | None = None  # latest normalised depth map
+        self._lock = threading.Lock()
+        self._busy = False
+        self._ema: dict[str, float] = {}
+
+    def _infer_worker(self, bgr_frame: np.ndarray):
+        try:
+            from PIL import Image as PILImage
+            rgb = bgr_frame[:, :, ::-1]
+            pil_img = PILImage.fromarray(rgb)
+            result = self._pipe(pil_img, input_size=256)
+            raw = np.array(result["depth"], dtype=np.float32)
+            dmin, dmax = raw.min(), raw.max()
+            if dmax > dmin:
+                normalized = (raw - dmin) / (dmax - dmin)
+            else:
+                normalized = np.zeros_like(raw)
+            with self._lock:
+                self.depth_map = normalized
+        except Exception as e:
+            print(f"[MonocularDepthEstimator] Inference error: {e}")
+        finally:
+            self._busy = False
+
+    def submit_frame(self, bgr_frame: np.ndarray):
+        """Submit a frame for async depth inference. No-op if previous still running."""
+        if self._busy:
+            return
+        self._busy = True
+        t = threading.Thread(target=self._infer_worker, args=(bgr_frame.copy(),), daemon=True)
+        t.start()
+
+    def get_depth(self, key: str, px: int, py: int,
+                  frame_w: int = 0, frame_h: int = 0) -> float | None:
+        """Return EMA-smoothed normalised depth (0=far, 1=close) at pixel (px, py).
+
+        frame_w / frame_h: resolution of the *display* frame the pixel comes from.
+        If provided, coordinates are scaled to the depth map's own resolution.
+        """
+        with self._lock:
+            dm = self.depth_map
+        if dm is None:
+            return None
+        dh, dw = dm.shape
+        # Scale coords from display frame resolution to depth map resolution
+        if frame_w > 0 and frame_h > 0:
+            px = int(px * dw / frame_w)
+            py = int(py * dh / frame_h)
+        px = max(0, min(dw - 1, px))
+        py = max(0, min(dh - 1, py))
+        raw_val = float(dm[py, px])
+        prev = self._ema.get(key)
+        smoothed = raw_val if prev is None else self.EMA_ALPHA * raw_val + (1.0 - self.EMA_ALPHA) * prev
+        self._ema[key] = smoothed
+        return smoothed

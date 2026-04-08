@@ -5,12 +5,9 @@ from detector import HandGestureDetector, ArmPoseDetector
 from robot.motors_controller import MotorsController
 from robot.robot_controller import RobotController
 
-# --- CONFIGURATION ---
-MIRROR_VIDEO = True  # Set to True if your camera is physically mirrored
-CONTROL_SYSTEM = 2
-# ---------------------
-
-def main():
+def main(control_system=2, mirror_video=True, frame_callback=None, check_exit_callback=None):
+    CONTROL_SYSTEM = control_system
+    MIRROR_VIDEO = mirror_video
     detector = HandGestureDetector(model_path="hand_landmarker.task")
     pose_detector = ArmPoseDetector(model_path="pose_landmarker_full.task")
 
@@ -210,10 +207,17 @@ def main():
                 cv2.putText(frame, f"STATE: {state}", (20, 40), 
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0) if state == "ACTIVE" else (0, 0, 255), 2, cv2.LINE_AA)
 
-            cv2.imshow('Fingertip Detector', frame)
+            if frame_callback is not None:
+                frame_callback(frame)
+            else:
+                cv2.imshow('Fingertip Detector', frame)
 
-            if cv2.waitKey(5) & 0xFF == ord('q'):
-                break
+            if check_exit_callback is not None:
+                if check_exit_callback():
+                    break
+            else:
+                if cv2.waitKey(5) & 0xFF == ord('q'):
+                    break
 
         cap.release()
         cv2.destroyAllWindows()

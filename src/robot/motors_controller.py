@@ -1,7 +1,6 @@
 from lerobot.robots.so_follower import SOFollower
 from lerobot.robots.so_follower import SOFollowerRobotConfig
 import os
-import sys
 
 # Attempt to import the visualizer
 try:
@@ -10,7 +9,7 @@ except ImportError:
     FoxgloveVisualizer = None
 
 
-class RobotController:
+class MotorsController:
     def __init__(self, port="/dev/ttyACM0"):
         self.config = SOFollowerRobotConfig(
             port=port,
@@ -78,7 +77,6 @@ class RobotController:
                 self.robot.send_action(self.current_action)
             elif self.visualizer:
                 self.visualizer.update_visualization(self.current_action)
-            print(f"Gripper Pos Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)
 
     def set_shoulder_lift(self, target_pos, alpha=0.1):
         # Apply exponential moving average smoothing
@@ -95,7 +93,6 @@ class RobotController:
                 self.robot.send_action(self.current_action)
             elif self.visualizer:
                 self.visualizer.update_visualization(self.current_action)
-            print(f"Shoulder Lift Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)
 
     def set_elbow_flex(self, target_pos, alpha=0.1):
         # Apply exponential moving average smoothing
@@ -112,7 +109,6 @@ class RobotController:
                 self.robot.send_action(self.current_action)
             elif self.visualizer:
                 self.visualizer.update_visualization(self.current_action)
-            print(f"Elbow Flex Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)
 
     def set_wrist_flex(self, target_pos, alpha=0.1):
         # Apply exponential moving average smoothing
@@ -129,7 +125,6 @@ class RobotController:
                 self.robot.send_action(self.current_action)
             elif self.visualizer:
                 self.visualizer.update_visualization(self.current_action)
-            print(f"Wrist Flex Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)
 
     def set_shoulder_pan(self, target_pos, alpha=0.1):
         # Apply exponential moving average smoothing
@@ -146,7 +141,6 @@ class RobotController:
                 self.robot.send_action(self.current_action)
             elif self.visualizer:
                 self.visualizer.update_visualization(self.current_action)
-            print(f"Shoulder Pan Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)
 
     def set_wrist_roll(self, target_pos, alpha=0.1):
         # Apply exponential moving average smoothing
@@ -163,7 +157,6 @@ class RobotController:
                 self.robot.send_action(self.current_action)
             elif self.visualizer:
                 self.visualizer.update_visualization(self.current_action)
-            print(f"Wrist Roll Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)
 
     def set_target_joints(self, target_dict, alpha_dict=None):
         """

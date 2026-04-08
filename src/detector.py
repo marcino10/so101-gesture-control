@@ -1,8 +1,6 @@
 import os
-import threading
 import urllib.request
 import math
-import numpy as np
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision

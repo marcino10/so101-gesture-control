@@ -4,6 +4,3 @@ lerobot[feetech]
 foxglove-sdk
 yourdfpy
 scipy
-transformers
-torch
-Pillow

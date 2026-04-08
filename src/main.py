@@ -1,7 +1,7 @@
 import cv2
 import math
 import time
-from detector import HandGestureDetector, ArmPoseDetector, MonocularDepthEstimator
+from detector import HandGestureDetector, ArmPoseDetector
 from robot_controller import RobotController
 
 # --- CONFIGURATION ---
@@ -11,7 +11,6 @@ MIRROR_VIDEO = True  # Set to True if your camera is physically mirrored
 def main():
     detector = HandGestureDetector(model_path="hand_landmarker.task")
     pose_detector = ArmPoseDetector(model_path="pose_landmarker_full.task")
-    depth_estimator = MonocularDepthEstimator()
 
     cap = cv2.VideoCapture(0)
 
@@ -26,8 +25,8 @@ def main():
     baseline_box_half_size = 0
     missing_frames = 0
     locked_hand_label = None
-    prev_rel_depth = None
     baseline_wrist_y = None
+    baseline_shoulder_dist = None
 
     # Connect to the robot automatically, using a context manager
     with RobotController(port="/dev/ttyACM0") as robot:
@@ -50,9 +49,6 @@ def main():
                 cv2.line(frame, (0, i * h // 3), (w, i * h // 3), (80, 80, 80), 1)
 
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-            # Submit frame for async monocular depth estimation
-            depth_estimator.submit_frame(frame)
             
             # In LIVE_STREAM mode, timestamp must be monotonically increasing
             timestamp_ms = int(time.monotonic() * 1000)
@@ -67,7 +63,7 @@ def main():
             detection_result = detector.latest_result
             pose_result = pose_detector.latest_result
             
-            # --- Visualize Pose Landmarks (Shoulders, Elbows, Wrists) + Depth ---
+            # --- Visualize Pose Landmarks (Shoulders, Elbows, Wrists) ---
             if pose_result and pose_result.pose_landmarks:
                 for pose_landmarks in pose_result.pose_landmarks:
                     # Draw Pose Connections
@@ -78,32 +74,14 @@ def main():
                             x2, y2 = int(pose_landmarks[j].x * w), int(pose_landmarks[j].y * h)
                             cv2.line(frame, (x1, y1), (x2, y2), (255, 150, 0), 2)
 
-                    # Draw Joints + depth overlay
-                    depth_lm_ids = {
-                        0:  "Head",
-                        11: "L-Should", 12: "R-Should",
-                        13: "L-Elbow",  14: "R-Elbow",
-                        15: "L-Wrist",  16: "R-Wrist",
-                    }
-                    for lm_idx, base_label in depth_lm_ids.items():
+                    # Draw Joints
+                    joint_ids = [0, 11, 12, 13, 14, 15, 16]
+                    for lm_idx in joint_ids:
                         if lm_idx < len(pose_landmarks):
                             lm = pose_landmarks[lm_idx]
                             px, py = int(lm.x * w), int(lm.y * h)
                             cv2.circle(frame, (px, py), 8, (255, 100, 0), cv2.FILLED)
 
-                            # Look up depth at this landmark's pixel position
-                            depth_val = depth_estimator.get_depth(base_label, px, py, frame_w=w, frame_h=h)
-                            if depth_val is not None:
-                                label = f"{base_label} d:{depth_val:.2f}"
-                            else:
-                                label = f"{base_label} d:..."
-                            cv2.putText(frame, label, (px + 15, py),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 200, 0), 1)
-
-            # --- Depth map status indicator ---
-            if depth_estimator.depth_map is None:
-                cv2.putText(frame, "Depth: loading...", (w - 200, h - 15),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
 
             # Handle State Reset if hands disappear
             if not detection_result or not detection_result.hand_landmarks:
@@ -113,8 +91,7 @@ def main():
                     state = "IDLE"
                     baseline_center = None
                     locked_hand_label = None
-                    prev_rel_depth = None
-                    baseline_wrist_y = None
+                    baseline_shoulder_dist = None
                     detector.activation_tracker.reset()
                 
                 cv2.putText(frame, f"STATE: {state}", (20, 40), 
@@ -150,6 +127,21 @@ def main():
                             
                             # Set baseline wrist_y for elbow control to 1/4 of the screen height (fixed anchor)
                             baseline_wrist_y = 0.25
+                            
+                            # Capture baseline shoulder lift distance (hand-wrist to pose-elbow)
+                            if pose_result and pose_result.pose_landmarks:
+                                pl = pose_result.pose_landmarks[0]
+                                is_right = (locked_hand_label == "Right")
+                                if MIRROR_VIDEO:
+                                    elbow_idx = 13 if is_right else 14
+                                else:
+                                    elbow_idx = 14 if is_right else 13
+                                    
+                                if elbow_idx < len(pl):
+                                    el = pl[elbow_idx]
+                                    wr = hand_landmarks[0]
+                                    # Y-axis only distance: wrist above elbow (wr.y < el.y)
+                                    baseline_shoulder_dist = max(0, el.y - wr.y)
 
                             print(f"\n>>> OPEN-CLOSE-OPEN DETECTED: Locked onto {locked_hand_label} Hand. <<<")
                     
@@ -274,68 +266,56 @@ def main():
                                     cv2.putText(frame, "ELBOW BASE", (10, by_px - 10), 
                                                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
 
-                        # --- Shoulder Lift Control (relative depth: wrist vs shoulder) ---
-                        # Uses Depth Anything V2 depth map.
-                        # Relative depth = wrist_depth - shoulder_depth:
-                        #   positive → wrist is CLOSER to camera than shoulder (arm reaching forward)
-                        #   negative → wrist is FURTHER than shoulder (arm pulled back)
-                        # Map to shoulder_lift.pos: closer = more forward (higher pos value).
-                        if pose_result and pose_result.pose_landmarks:
+                        # --- Shoulder Lift Control (Wrist-to-Elbow Distance) ---
+                        # If distance decreases (hand brought to elbow), shoulder lift increases.
+                        if pose_result and pose_result.pose_landmarks and baseline_shoulder_dist:
                             pl = pose_result.pose_landmarks[0]
-                            is_physical_right = (locked_hand_label == "Right")
-                            # Get required landmarks for base plane: Nose (0), L-Shoulder (11), R-Shoulder (12)
-                            base_indices = [0, 11, 12]
-                            base_depths = []
-                            for idx in base_indices:
-                                if idx < len(pl):
-                                    lm = pl[idx]
-                                    label = depth_lm_ids.get(idx, "Unknown")
-                                    # Use the same label as defined in the visualization block
-                                    d = depth_estimator.get_depth(label, int(lm.x * w), int(lm.y * h), frame_w=w, frame_h=h)
-                                    if d is not None:
-                                        base_depths.append(d)
-                            
-                            # Wrist index for tracked hand
+                            is_right = (locked_hand_label == "Right")
                             if MIRROR_VIDEO:
-                                wrist_idx = 15 if is_physical_right else 16
+                                elbow_idx = 13 if is_right else 14
                             else:
-                                wrist_idx = 16 if is_physical_right else 15
+                                elbow_idx = 14 if is_right else 13
 
-                            if len(base_depths) > 0 and wrist_idx < len(pl):
-                                # Use the most "distant" point (min in our 0-1 map) as the reference backplane
-                                base_ref = min(base_depths)
-                                wrist_lm = pl[wrist_idx]
-                                wr_px = int(wrist_lm.x * w); wr_py = int(wrist_lm.y * h)
-                                wrist_label = depth_lm_ids.get(wrist_idx, "Wrist")
-                                wrist_depth = depth_estimator.get_depth(wrist_label, wr_px, wr_py, frame_w=w, frame_h=h)
-
-                                if wrist_depth is not None:
-                                    # rel_depth = distance between base (the body) and the wrist
-                                    wrist_offset = 0.2
-                                    rel_depth = max(0, abs(wrist_depth - base_ref) - wrist_offset)
-
-                                    # Delta Deadzone: only move if change > 0.02
-                                    if prev_rel_depth is None or abs(rel_depth - prev_rel_depth) > 0.02:
-                                        prev_rel_depth = rel_depth
-                                        
-                                    # Normalized reach: [0.0..0.25] mapped to [-1.0..1.0]
-                                    norm_reach = (prev_rel_depth / 0.25) * 2.0 - 1.0
-                                    norm_reach = max(-1.0, min(1.0, norm_reach))
-
-                                    # Linear mapping for predictability
-                                    # Output range [-10, 90] -> Center: 40, Scale: 50
-                                    val = 40.0 + norm_reach * 50.0
-
-                                    # Stepping: discrete 3.0 degree increments to reduce jitter
-                                    lift_target = round(val / 3.0) * 3.0
-                                    
-                                    target_joints["shoulder_lift.pos"] = lift_target
-                                    alpha_dict["shoulder_lift.pos"] = 0.05
-                                    hud = f"lift:{lift_target:+.0f}° rel:{rel_depth:+.2f}"
-
-                                    # HUD: show relative depth near wrist
-                                    cv2.putText(frame, hud, (wr_px + 15, wr_py + 18),
-                                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 220, 255), 1)
+                            if elbow_idx < len(pl):
+                                elbow_lm = pl[elbow_idx]
+                                wrist_lm = hand_landmarks[0] # Using Hand landmarker wrist
+                                
+                                # Y-axis only distance: wrist above elbow (wrist_lm.y < elbow_lm.y)
+                                # if wrist is below elbow (wrist_lm.y > elbow_lm.y), dist is 0
+                                current_dist = max(0, elbow_lm.y - wrist_lm.y)
+                                
+                                # Clamp current_dist so it doesn't exceed baseline
+                                current_dist = min(current_dist, baseline_shoulder_dist)
+                                
+                                # Mapping: baseline_dist -> -10,  0.05 dist -> 90
+                                # min_dist_anchor = 0.05 (normalized units)
+                                min_dist_anchor = 0.05
+                                
+                                # diff = distance reduction from baseline towards min_dist_anchor
+                                diff = baseline_shoulder_dist - current_dist
+                                max_diff = max(0.01, baseline_shoulder_dist - min_dist_anchor)
+                                
+                                # Scale 0..max_diff to -10..90
+                                lift_val = -10.0 + (max(0, diff) / max_diff) * 100.0
+                                
+                                # Stepping: discrete 3.0 degree increments
+                                lift_target = round(lift_val / 3.0) * 3.0
+                                
+                                target_joints["shoulder_lift.pos"] = lift_target
+                                alpha_dict["shoulder_lift.pos"] = 0.1
+                                
+                                # HUD: draw vertical distance indicator for feedback
+                                ex, ey = int(elbow_lm.x * w), int(elbow_lm.y * h)
+                                wx, wy = int(wrist_lm.x * w), int(wrist_lm.y * h)
+                                
+                                # Show vertical project line
+                                cv2.line(frame, (ex, ey), (ex, wy), (255, 0, 255), 2)
+                                # Connector to wrist
+                                cv2.line(frame, (ex, wy), (wx, wy), (150, 0, 150), 1, cv2.LINE_AA)
+                                
+                                hud = f"LIFT: {lift_target:+.0f} deg (dy:{current_dist:.2f})"
+                                cv2.putText(frame, hud, (wx + 15, wy + 20),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
 
                         robot.set_target_joints(target_joints, alpha_dict=alpha_dict)
                         

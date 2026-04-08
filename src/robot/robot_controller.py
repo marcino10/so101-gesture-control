@@ -66,11 +66,11 @@ class RobotController:
                 target_pos = self.robot.current_action.get("gripper.pos", 50.0)
                 if norm_pinch < 0.25:
                     intensity = (0.25 - norm_pinch) / 0.25
-                    target_pos -= (3.0 * intensity)
+                    target_pos -= (5.0 * intensity)
                 elif norm_pinch > 0.75:
                     intensity = (min(1.0, norm_pinch) - 0.75) / 0.25
-                    target_pos += (3.0 * intensity)
-                self.robot.set_gripper(target_pos, alpha=0.2)
+                    target_pos += (5.0 * intensity)
+                self.robot.set_gripper(target_pos, alpha=0.4)
         return pinch_dist_3d
 
     def _set_shoulder_pan(self, system, pose_landmarks, locked_hand_label, mirror_video, w, h, frame, thumb_px=0, index_px=0, baseline_box_half_size=100, cx=0, cy=0):
@@ -129,11 +129,11 @@ class RobotController:
                     pan_target = self.robot.current_action.get("shoulder_pan.pos", 0.0)
                     if pan_left_condition:
                         intensity = min(1.0, left_intensity)
-                        pan_target -= (3.0 * intensity)
+                        pan_target -= (5.0 * intensity)
                     elif pan_right_condition:
                         intensity = min(1.0, right_intensity)
-                        pan_target += (3.0 * intensity)
-                    self.robot.set_shoulder_pan(pan_target, alpha=0.1)
+                        pan_target += (5.0 * intensity)
+                    self.robot.set_shoulder_pan(pan_target, alpha=0.3)
 
     def _set_elbow_flex(self, system, pose_landmarks, hand_landmarks, baseline_elbow_dist, locked_hand_label, mirror_video, w, h, frame, num_active=0, avg_y=0, upper_bound=0, lower_bound=0, baseline_box_half_size=1, cx=0, baseline_wrist_y=None):
         if system == 3:
@@ -197,11 +197,11 @@ class RobotController:
                     target_pos = self.robot.current_action.get("elbow_flex.pos", 0.0)
                     if avg_y < upper_bound:
                         intensity = min(1.0, (upper_bound - avg_y) / (baseline_box_half_size * 0.4))
-                        target_pos -= (3.0 * intensity)
+                        target_pos -= (5.0 * intensity)
                     elif avg_y > lower_bound:
                         intensity = min(1.0, (avg_y - lower_bound) / (baseline_box_half_size * 0.4))
-                        target_pos += (3.0 * intensity)
-                    self.robot.set_elbow_flex(target_pos, alpha=0.1)
+                        target_pos += (5.0 * intensity)
+                    self.robot.set_elbow_flex(target_pos, alpha=0.3)
 
     def _set_shoulder_lift(self, system, pose_world_landmarks, pose_landmarks, locked_hand_label, mirror_video, w, h, frame, num_active=0, avg_y=0, upper_bound=0, lower_bound=0, baseline_box_half_size=1, cx=0, hand_landmarks=None, baseline_elbow_dist=None):
         if system == 3:
@@ -285,11 +285,11 @@ class RobotController:
                     target_pos = self.robot.current_action.get("shoulder_lift.pos", 0.0)
                     if avg_y < upper_bound:
                         intensity = min(1.0, (upper_bound - avg_y) / (baseline_box_half_size * 0.4))
-                        target_pos += (3.0 * intensity)
+                        target_pos += (5.0 * intensity)
                     elif avg_y > lower_bound:
                         intensity = min(1.0, (avg_y - lower_bound) / (baseline_box_half_size * 0.4))
-                        target_pos -= (3.0 * intensity)
-                    self.robot.set_shoulder_lift(target_pos, alpha=0.1)
+                        target_pos -= (5.0 * intensity)
+                    self.robot.set_shoulder_lift(target_pos, alpha=0.3)
 
     def _set_wrist(self, system, num_active, avg_y, upper_bound, lower_bound, baseline_box_half_size, cx, cy, index_px, index_py, thumb_px, thumb_py, mirror_video, frame, hand_world_landmarks=None, baseline_hand_pitch_y=None, baseline_hand_roll=None, locked_hand_label=None, hand_landmarks=None, w=0, h=0):
         if system == 3:
@@ -329,11 +329,11 @@ class RobotController:
                     target_pos = self.robot.current_action.get("wrist_flex.pos", 0.0)
                     if avg_y < upper_bound:
                         intensity = min(1.0, (upper_bound - avg_y) / (baseline_box_half_size * 0.4))
-                        target_pos -= (3.0 * intensity)
+                        target_pos -= (5.0 * intensity)
                     elif avg_y > lower_bound:
                         intensity = min(1.0, (avg_y - lower_bound) / (baseline_box_half_size * 0.4))
-                        target_pos += (3.0 * intensity)
-                    self.robot.set_wrist_flex(target_pos, alpha=0.1)
+                        target_pos += (5.0 * intensity)
+                    self.robot.set_wrist_flex(target_pos, alpha=0.3)
             
             # Wrist Roll
             current_angle_rad = math.atan2(index_py - thumb_py, index_px - thumb_px)
@@ -351,8 +351,8 @@ class RobotController:
                         direction = 1 if roll_deviation > 0 else -1
                     else:
                         direction = -1 if roll_deviation > 0 else 1
-                    roll_target -= (5.0 * intensity * direction)
-                self.robot.set_wrist_roll(roll_target, alpha=0.1)
+                    roll_target -= (8.0 * intensity * direction)
+                self.robot.set_wrist_roll(roll_target, alpha=0.3)
 
     def moveRobot(self, system, hand_landmarks, hand_world_landmarks, pose_landmarks, pose_world_landmarks,
                   locked_hand_label, baseline_elbow_dist, 

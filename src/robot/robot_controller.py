@@ -11,6 +11,36 @@ class RobotController:
         self.baseline_shoulder_dist_3d = None
         self.prev_rel_depth_3d = None
 
+    @staticmethod
+    def get_hand_pitch(hand_world_landmarks):
+        if not hand_world_landmarks or len(hand_world_landmarks) < 11:
+            return 0.0
+            
+        # Palm vector (Wrist 0 -> MCP 9)
+        palm_y = hand_world_landmarks[9].y - hand_world_landmarks[0].y
+        palm_xz = math.hypot(hand_world_landmarks[9].x - hand_world_landmarks[0].x, hand_world_landmarks[9].z - hand_world_landmarks[0].z)
+        palm_pitch = math.degrees(math.atan2(palm_y, palm_xz))
+        
+        # Finger vector (MCP 9 -> PIP 10)
+        finger_y = hand_world_landmarks[10].y - hand_world_landmarks[9].y
+        finger_xz = math.hypot(hand_world_landmarks[10].x - hand_world_landmarks[9].x, hand_world_landmarks[10].z - hand_world_landmarks[9].z)
+        finger_pitch = math.degrees(math.atan2(finger_y, finger_xz))
+        
+        # Average pitch
+        return (palm_pitch + finger_pitch) / 2.0
+
+    @staticmethod
+    def get_hand_roll(hand_world_landmarks, is_right_hand):
+        if not hand_world_landmarks or len(hand_world_landmarks) < 18:
+            return 0.0
+        dx = hand_world_landmarks[17].x - hand_world_landmarks[5].x
+        dy = hand_world_landmarks[17].y - hand_world_landmarks[5].y
+        
+        if not is_right_hand:
+            dx = -dx
+            
+        return math.degrees(math.atan2(dy, dx))
+
     def _get_active_fingers(self, pose):
         active = []
         for name, tip_idx, mcp_idx in [("Index", 8, 5), ("Middle", 12, 9), ("Ring", 16, 13)]:
@@ -125,7 +155,7 @@ class RobotController:
                     diff = baseline_elbow_dist - current_dist
                     max_diff = max(0.01, baseline_elbow_dist - min_dist_anchor)
                     
-                    flex_val = -10.0 + (max(0, diff) / max_diff) * 100.0
+                    flex_val = -90.0 + (max(0, diff) / max_diff) * 180.0
                     flex_target = round(flex_val / 3.0) * 3.0
                     
                     if self.robot:
@@ -261,8 +291,37 @@ class RobotController:
                         target_pos -= (3.0 * intensity)
                     self.robot.set_shoulder_lift(target_pos, alpha=0.1)
 
-    def _set_wrist(self, system, num_active, avg_y, upper_bound, lower_bound, baseline_box_half_size, cx, cy, index_px, index_py, thumb_px, thumb_py, mirror_video, frame):
-        if system == 1 and baseline_box_half_size:
+    def _set_wrist(self, system, num_active, avg_y, upper_bound, lower_bound, baseline_box_half_size, cx, cy, index_px, index_py, thumb_px, thumb_py, mirror_video, frame, hand_world_landmarks=None, baseline_hand_pitch_y=None, baseline_hand_roll=None, locked_hand_label=None, hand_landmarks=None, w=0, h=0):
+        if system == 3:
+            if hand_world_landmarks and baseline_hand_pitch_y is not None and baseline_hand_roll is not None:
+                # Flex
+                current_pitch = self.get_hand_pitch(hand_world_landmarks)
+                delta_pitch = current_pitch - baseline_hand_pitch_y
+                
+                # Default position is -20. Sweeping hand DOWN (positive delta_pitch) increases angle towards +90.
+                val_flex = -90.0 + (delta_pitch * 2.0)
+                val_flex = max(-90.0, min(90.0, val_flex))
+                flex_target = round(val_flex / 3.0) * 3.0
+                
+                # Roll
+                is_right = (locked_hand_label == "Right")
+                current_roll = self.get_hand_roll(hand_world_landmarks, is_right)
+                delta_roll = (current_roll - baseline_hand_roll + 180) % 360 - 180
+                
+                val_roll = delta_roll * 1.3
+                val_roll = max(-90.0, min(90.0, val_roll))
+                roll_target = round(val_roll / 3.0) * 3.0
+                
+                if self.robot:
+                    self.robot.set_wrist_flex(flex_target, alpha=0.1)
+                    self.robot.set_wrist_roll(roll_target, alpha=0.1)
+
+                if hand_landmarks:
+                    mx, my = int(hand_landmarks[10].x * w), int(hand_landmarks[10].y * h)
+                    cv2.putText(frame, f"FLEX: {flex_target:+.0f} ROLL: {roll_target:+.0f}", (mx + 15, my), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 100, 255), 1)
+
+        elif system == 1 and baseline_box_half_size:
             if num_active >= 3:
                 cv2.putText(frame, "CONTROL: WRIST", (cx - baseline_box_half_size, int(upper_bound) - 10), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
@@ -297,7 +356,7 @@ class RobotController:
 
     def moveRobot(self, system, hand_landmarks, hand_world_landmarks, pose_landmarks, pose_world_landmarks,
                   locked_hand_label, baseline_elbow_dist, 
-                  mirror_video, w, h, frame, detector, baseline_center=None, baseline_box_half_size=100, baseline_wrist_y=None):
+                  mirror_video, w, h, frame, detector, baseline_center=None, baseline_box_half_size=100, baseline_wrist_y=None, baseline_hand_pitch_y=None, baseline_hand_roll=None):
                   
         pose = detector.extract_full_pose(hand_world_landmarks)
         
@@ -364,4 +423,4 @@ class RobotController:
         self._set_shoulder_pan(system, pose_landmarks, locked_hand_label, mirror_video, w, h, frame, thumb_px, index_px, baseline_box_half_size, cx, cy)
         self._set_elbow_flex(system, pose_landmarks, hand_landmarks, baseline_elbow_dist, locked_hand_label, mirror_video, w, h, frame, num_active, avg_y, upper_bound, lower_bound, baseline_box_half_size, cx, baseline_wrist_y=baseline_wrist_y)
         self._set_shoulder_lift(system, pose_world_landmarks, pose_landmarks, locked_hand_label, mirror_video, w, h, frame, num_active, avg_y, upper_bound, lower_bound, baseline_box_half_size, cx, hand_landmarks=hand_landmarks, baseline_elbow_dist=baseline_elbow_dist)
-        self._set_wrist(system, num_active, avg_y, upper_bound, lower_bound, baseline_box_half_size, cx, cy, index_px, index_py, thumb_px, thumb_py, mirror_video, frame)
+        self._set_wrist(system, num_active, avg_y, upper_bound, lower_bound, baseline_box_half_size, cx, cy, index_px, index_py, thumb_px, thumb_py, mirror_video, frame, hand_world_landmarks=hand_world_landmarks, baseline_hand_pitch_y=baseline_hand_pitch_y, baseline_hand_roll=baseline_hand_roll, locked_hand_label=locked_hand_label, hand_landmarks=hand_landmarks, w=w, h=h)

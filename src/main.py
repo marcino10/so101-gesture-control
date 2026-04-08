@@ -7,7 +7,7 @@ from robot.robot_controller import RobotController
 
 # --- CONFIGURATION ---
 MIRROR_VIDEO = True  # Set to True if your camera is physically mirrored
-CONTROL_SYSTEM = 2
+CONTROL_SYSTEM = 3
 # ---------------------
 
 def main():
@@ -31,6 +31,8 @@ def main():
     locked_hand_label = None
     baseline_elbow_dist = None
     baseline_wrist_y = None
+    baseline_hand_pitch_y = None
+    baseline_hand_roll = None
 
     # Connect to the motors automatically, using a context manager
     with MotorsController(port="/dev/ttyACM0") as motors:
@@ -101,6 +103,8 @@ def main():
                     robot.reset_states()
                     baseline_elbow_dist = None
                     baseline_wrist_y = None
+                    baseline_hand_pitch_y = None
+                    baseline_hand_roll = None
                     detector.activation_tracker.reset()
                 
                 cv2.putText(frame, f"STATE: {state}", (20, 40), 
@@ -149,6 +153,10 @@ def main():
                                     # Y-axis only distance: wrist above elbow (wr.y < el.y)
                                     baseline_elbow_dist = max(0, el.y - wr.y)
                                     baseline_wrist_y = wr.y
+
+                            # Capture baseline wrist pitch and roll
+                            baseline_hand_pitch_y = robot.get_hand_pitch(hand_world_landmarks)
+                            baseline_hand_roll = robot.get_hand_roll(hand_world_landmarks, locked_hand_label == "Right")
 
                             print(f"\n>>> OPEN-CLOSE-OPEN DETECTED: Locked onto {locked_hand_label} Hand. <<<")
                     
@@ -204,7 +212,9 @@ def main():
                             detector=detector,
                             baseline_center=baseline_center,
                             baseline_box_half_size=baseline_box_half_size,
-                            baseline_wrist_y=baseline_wrist_y
+                            baseline_wrist_y=baseline_wrist_y,
+                            baseline_hand_pitch_y=baseline_hand_pitch_y,
+                            baseline_hand_roll=baseline_hand_roll
                         )
                         
                 cv2.putText(frame, f"STATE: {state}", (20, 40), 

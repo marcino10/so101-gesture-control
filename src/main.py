@@ -2,7 +2,8 @@ import cv2
 import math
 import time
 from detector import HandGestureDetector, ArmPoseDetector
-from robot_controller import RobotController
+from robot.motors_controller import MotorsController
+from robot.robot_controller import RobotController
 
 # --- CONFIGURATION ---
 MIRROR_VIDEO = True  # Set to True if your camera is physically mirrored
@@ -26,12 +27,11 @@ def main():
     baseline_box_half_size = 0
     missing_frames = 0
     locked_hand_label = None
-    prev_rel_depth = None
-    baseline_wrist_y = None
-    baseline_shoulder_dist = None
+    baseline_elbow_dist = None
 
-    # Connect to the robot automatically, using a context manager
-    with RobotController(port="/dev/ttyACM0") as robot:
+    # Connect to the motors automatically, using a context manager
+    with MotorsController(port="/dev/ttyACM0") as motors:
+        robot = RobotController(motors_controller=motors)
         
         while cap.isOpened():
             success, frame = cap.read()
@@ -51,8 +51,7 @@ def main():
                 cv2.line(frame, (0, i * h // 3), (w, i * h // 3), (80, 80, 80), 1)
 
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-
+            
             # In LIVE_STREAM mode, timestamp must be monotonically increasing
             timestamp_ms = int(time.monotonic() * 1000)
             
@@ -66,7 +65,7 @@ def main():
             detection_result = detector.latest_result
             pose_result = pose_detector.latest_result
             
-            # --- Visualize Pose Landmarks (Shoulders, Elbows, Wrists) + Depth ---
+            # --- Visualize Pose Landmarks (Shoulders, Elbows, Wrists) ---
             if pose_result and pose_result.pose_landmarks:
                 for pose_landmarks in pose_result.pose_landmarks:
                     # Draw Pose Connections
@@ -77,23 +76,16 @@ def main():
                             x2, y2 = int(pose_landmarks[j].x * w), int(pose_landmarks[j].y * h)
                             cv2.line(frame, (x1, y1), (x2, y2), (255, 150, 0), 2)
 
-                    # Draw Joints + depth overlay
-                    depth_lm_ids = {
-                        0:  "Head",
-                        11: "L-Should", 12: "R-Should",
-                        13: "L-Elbow",  14: "R-Elbow",
-                        15: "L-Wrist",  16: "R-Wrist",
-                    }
-                    for lm_idx, base_label in depth_lm_ids.items():
+                    # Draw Joints
+                    joint_ids = [0, 11, 12, 13, 14, 15, 16]
+                    for lm_idx in joint_ids:
                         if lm_idx < len(pose_landmarks):
                             lm = pose_landmarks[lm_idx]
                             px, py = int(lm.x * w), int(lm.y * h)
                             cv2.circle(frame, (px, py), 8, (255, 100, 0), cv2.FILLED)
 
-                            cv2.putText(frame, base_label, (px + 15, py),
+                            cv2.putText(frame, str(lm_idx), (px + 15, py),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 200, 0), 1)
-
-
 
             # Handle State Reset if hands disappear
             if not detection_result or not detection_result.hand_landmarks:
@@ -103,9 +95,8 @@ def main():
                     state = "IDLE"
                     baseline_center = None
                     locked_hand_label = None
-                    prev_rel_depth = None
-                    baseline_wrist_y = None
-                    baseline_shoulder_dist = None
+                    robot.reset_states()
+                    baseline_elbow_dist = None
                     detector.activation_tracker.reset()
                 
                 cv2.putText(frame, f"STATE: {state}", (20, 40), 
@@ -139,9 +130,20 @@ def main():
                             state = "ACTIVE"
                             locked_hand_label = current_hand_label
                             
-                            # Set baseline wrist_y for elbow control to 1/4 of the screen height (fixed anchor)
-                            baseline_wrist_y = 0.25
-                            baseline_shoulder_dist = None
+                            # Capture baseline elbow flex distance (hand-wrist to pose-elbow)
+                            if pose_result and pose_result.pose_landmarks:
+                                pl = pose_result.pose_landmarks[0]
+                                is_right = (locked_hand_label == "Right")
+                                if MIRROR_VIDEO:
+                                    elbow_idx = 13 if is_right else 14
+                                else:
+                                    elbow_idx = 14 if is_right else 13
+                                    
+                                if elbow_idx < len(pl):
+                                    el = pl[elbow_idx]
+                                    wr = hand_landmarks[0]
+                                    # Y-axis only distance: wrist above elbow (wr.y < el.y)
+                                    baseline_elbow_dist = max(0, el.y - wr.y)
 
                             print(f"\n>>> OPEN-CLOSE-OPEN DETECTED: Locked onto {locked_hand_label} Hand. <<<")
                     
@@ -178,145 +180,23 @@ def main():
                             lx, ly = int(lm.x * w), int(lm.y * h)
                             cv2.circle(frame, (lx, ly), 5, (0, 255, 0), cv2.FILLED)
                         
-                        # Extract full 3D pose for future holistic mapping
-                        pose = detector.extract_full_pose(hand_world_landmarks)
+                        pose_landmarks = pose_result.pose_landmarks[0] if pose_result and pose_result.pose_landmarks else None
                         
-                        # Target joint dictionary to be calculated in the future
-                        target_joints = {}
+                        pose_world_landmarks = pose_result.pose_world_landmarks[0] if pose_result and pose_result.pose_world_landmarks else None
                         
-                        # Example placeholder parsing of the 3D pose (distance from thumb to index for gripper)
-                        thumb_z, index_z = pose["joint_4"]["z"], pose["joint_8"]["z"]
-                        thumb_x, index_x = pose["joint_4"]["x"], pose["joint_8"]["x"]
-                        thumb_y, index_y = pose["joint_4"]["y"], pose["joint_8"]["y"]
-                        pinch_dist_3d = math.hypot(thumb_x - index_x, thumb_y - index_y, thumb_z - index_z)
-                        
-                        # Map pinch_dist_3d back to a simple percentage for gripper logic just as a sanity check
-                        gripper_target = max(0.0, min(100.0, (pinch_dist_3d - 0.02) / 0.08 * 100))
-                        target_joints["gripper.pos"] = 100.0 - gripper_target # invert so pinched == closed
-                        
-                        # Dispatch all mapped joints back to controller
-                        alpha_dict = {"gripper.pos": 0.2}
-                        
-                        # --- Shoulder Pan Control ---
-                        # Semi-mirroring rotation of the arm: if wrist is to the right of the elbow, rotate right.
-                        if pose_result and pose_result.pose_landmarks:
-                            pl = pose_result.pose_landmarks[0]
-                            is_physical_right = (locked_hand_label == "Right")
-                            
-                            # MediaPipe Pose labeling on a mirrored frame interprets physical right as left.
-                            if MIRROR_VIDEO:
-                                elbow_idx = 13 if is_physical_right else 14
-                                wrist_idx = 15 if is_physical_right else 16
-                            else:
-                                elbow_idx = 14 if is_physical_right else 13
-                                wrist_idx = 16 if is_physical_right else 15
-                                
-                            if elbow_idx < len(pl) and wrist_idx < len(pl):
-                                elbow = pl[elbow_idx]
-                                wrist = pl[wrist_idx]
-                                
-                                # dx tells us horizontal offsets. (Positive means wrist to the right in the image overlay)
-                                dx = wrist.x - elbow.x
-                                
-                                # Typical dx for wrist-elbow rotation spans around roughly -0.15 to +0.15 in image space.
-                                # Let's map dx to -90 to 90 degrees.
-                                # An external multiplier controls sensitivity.
-                                pan_target = (dx / 0.15) * 90.0
-                                
-                                # If needed, you can invert the pan_target by multiplying by -1. 
-                                # Clamping within healthy robot limits.
-                                pan_target = max(-90.0, min(90.0, pan_target))
-                                
-                                target_joints["shoulder_pan.pos"] = pan_target
-                                alpha_dict["shoulder_pan.pos"] = 0.1
-
-                                # Draw a visual line indicating the vector being mapped
-                                cx_e, cy_e = int(elbow.x * w), int(elbow.y * h)
-                                cx_w, cy_w = int(wrist.x * w), int(wrist.y * h)
-                                cv2.line(frame, (cx_e, cy_e), (cx_w, cy_w), (0, 255, 255), 3)
-
-                                # --- Elbow Flex Control (Dynamic Sensitivity: Baseline = -10, Camera Bottom = +90) ---
-                                if baseline_wrist_y is not None:
-                                    # Use hand wrist (landmark 0) for more stable tracking
-                                    hand_wrist_y = hand_landmarks[0].y
-                                    # dy is positive when hand is BELOW baseline
-                                    dy = hand_wrist_y - baseline_wrist_y
-                                    
-                                    # Calculate available space between baseline and camera bottom (1.0)
-                                    available_space = max(0.01, 1.0 - baseline_wrist_y)
-                                    
-                                    # Baseline (dy=0) maps to -10. 
-                                    # Moving DOWN (dy > 0) INCREASES angle towards +90 over available_space.
-                                    if dy > 0:
-                                        # (dy / available_space) is percentage of distance to bottom
-                                        val = -90.0 + (dy / available_space * 1.4) * 180
-                                    else:
-                                        val = -90.0 # At or above baseline, min at -10
-                                    
-                                    # Clamp and apply stepping
-                                    capped_val = max(-90.0, min(90.0, val))
-                                    elbow_flex_target = round(capped_val / 3.0) * 3.0
-                                    
-                                    target_joints["elbow_flex.pos"] = elbow_flex_target
-                                    alpha_dict["elbow_flex.pos"] = 0.1
-                                    
-                                    # HUD: draw baseline height line
-                                    by_px = int(baseline_wrist_y * h)
-                                    cv2.line(frame, (0, by_px), (w, by_px), (255, 255, 0), 1, cv2.LINE_AA)
-                                    cv2.putText(frame, "ELBOW BASE", (10, by_px - 10), 
-                                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
-
-                        # --- Shoulder Lift Control (3D distance: wrist vs shoulder) ---
-                        if pose_result and pose_result.pose_world_landmarks:
-                            pwl = pose_result.pose_world_landmarks[0]
-                            is_physical_right = (locked_hand_label == "Right")
-                            
-                            if MIRROR_VIDEO:
-                                shoulder_idx = 11 if is_physical_right else 12
-                                wrist_idx = 15 if is_physical_right else 16
-                            else:
-                                shoulder_idx = 12 if is_physical_right else 11
-                                wrist_idx = 16 if is_physical_right else 15
-
-                            if shoulder_idx < len(pwl) and wrist_idx < len(pwl):
-                                shoulder = pwl[shoulder_idx]
-                                wrist = pwl[wrist_idx]
-                                
-                                # Use all 3 coords for 3D distance in meters
-                                dist_3d = math.hypot(wrist.x - shoulder.x, wrist.y - shoulder.y, wrist.z - shoulder.z)
-
-                                if baseline_shoulder_dist is None:
-                                    baseline_shoulder_dist = dist_3d
-
-                                # Delta Deadzone: only move if change > 0.02 meters
-                                if prev_rel_depth is None or abs(dist_3d - prev_rel_depth) > 0.02:
-                                    prev_rel_depth = dist_3d
-                                        
-                                # Normalized reach: mapping delta from baseline to [-1.0..1.0]
-                                # Control span is 20cm (0.2m), so deviation is roughly +/- 0.1m from baseline
-                                delta = prev_rel_depth - baseline_shoulder_dist
-                                norm_reach = delta / 0.1
-                                norm_reach = max(-1.0, min(1.0, norm_reach))
-
-                                # Linear mapping for predictability
-                                # Output range [-10, 90] -> Center: 40, Scale: 50
-                                val = 40.0 + norm_reach * 50.0
-
-                                # Stepping: discrete 3.0 degree increments to reduce jitter
-                                lift_target = round(val / 3.0) * 3.0
-                                
-                                target_joints["shoulder_lift.pos"] = lift_target
-                                alpha_dict["shoulder_lift.pos"] = 0.05
-                                
-                                # Draw HUD near wrist using image coordinates
-                                if pose_result.pose_landmarks and wrist_idx < len(pose_result.pose_landmarks[0]):
-                                    pm = pose_result.pose_landmarks[0][wrist_idx]
-                                    wr_px, wr_py = int(pm.x * w), int(pm.y * h)
-                                    hud = f"lift:{lift_target:+.0f} d3d:{dist_3d:.2f}m"
-                                    cv2.putText(frame, hud, (wr_px + 15, wr_py + 18),
-                                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 220, 255), 1)
-
-                        robot.set_target_joints(target_joints, alpha_dict=alpha_dict)
+                        robot.moveRobot(
+                            hand_landmarks=hand_landmarks,
+                            hand_world_landmarks=hand_world_landmarks,
+                            pose_landmarks=pose_landmarks,
+                            pose_world_landmarks=pose_world_landmarks,
+                            locked_hand_label=locked_hand_label,
+                            baseline_elbow_dist=baseline_elbow_dist,
+                            mirror_video=MIRROR_VIDEO,
+                            w=w,
+                            h=h,
+                            frame=frame,
+                            detector=detector
+                        )
                         
                 cv2.putText(frame, f"STATE: {state}", (20, 40), 
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0) if state == "ACTIVE" else (0, 0, 255), 2, cv2.LINE_AA)

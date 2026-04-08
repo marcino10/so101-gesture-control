@@ -1,8 +1,6 @@
 import os
-import threading
 import urllib.request
 import math
-import numpy as np
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
@@ -153,6 +151,3 @@ class ArmPoseDetector:
     def process_async(self, rgb_frame, timestamp_ms):
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
         self.detector.detect_async(mp_image, timestamp_ms)
-
-
-

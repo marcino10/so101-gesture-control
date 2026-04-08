@@ -1,7 +1,6 @@
 from lerobot.robots.so_follower import SOFollower
 from lerobot.robots.so_follower import SOFollowerRobotConfig
 import os
-import sys
 
 # Attempt to import the visualizer
 try:
@@ -10,7 +9,7 @@ except ImportError:
     FoxgloveVisualizer = None
 
 
-class RobotController:
+class MotorsController:
     def __init__(self, port="/dev/ttyACM0"):
         self.config = SOFollowerRobotConfig(
             port=port,

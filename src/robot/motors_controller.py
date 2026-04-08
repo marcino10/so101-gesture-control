@@ -1,7 +1,6 @@
 from lerobot.robots.so_follower import SOFollower
 from lerobot.robots.so_follower import SOFollowerRobotConfig
 import os
-import sys
 
 # Attempt to import the visualizer
 try:
@@ -10,7 +9,7 @@ except ImportError:
     FoxgloveVisualizer = None
 
 
-class RobotController:
+class MotorsController:
     def __init__(self, port="/dev/ttyACM0"):
         self.config = SOFollowerRobotConfig(
             port=port,
@@ -78,7 +77,6 @@ class RobotController:
                 self.robot.send_action(self.current_action)
             elif self.visualizer:
                 self.visualizer.update_visualization(self.current_action)
-            print(f"Gripper Pos Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)
 
     def set_shoulder_lift(self, target_pos, alpha=0.1):
         # Apply exponential moving average smoothing
@@ -95,7 +93,6 @@ class RobotController:
                 self.robot.send_action(self.current_action)
             elif self.visualizer:
                 self.visualizer.update_visualization(self.current_action)
-            print(f"Shoulder Lift Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)
 
     def set_elbow_flex(self, target_pos, alpha=0.1):
         # Apply exponential moving average smoothing
@@ -103,7 +100,7 @@ class RobotController:
         smoothed_pos = (alpha * target_pos) + ((1.0 - alpha) * current)
         
         # Clamp between 0 and 180 (typical range for SO-101 elbow)
-        smoothed_pos = max(0.0, min(180.0, smoothed_pos))
+        smoothed_pos = max(-90.0, min(90.0, smoothed_pos))
         
         # Only send command if position meaningfully changed
         if abs(smoothed_pos - current) > 0.1:
@@ -112,7 +109,6 @@ class RobotController:
                 self.robot.send_action(self.current_action)
             elif self.visualizer:
                 self.visualizer.update_visualization(self.current_action)
-            print(f"Elbow Flex Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)
 
     def set_wrist_flex(self, target_pos, alpha=0.1):
         # Apply exponential moving average smoothing
@@ -129,7 +125,6 @@ class RobotController:
                 self.robot.send_action(self.current_action)
             elif self.visualizer:
                 self.visualizer.update_visualization(self.current_action)
-            print(f"Wrist Flex Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)
 
     def set_shoulder_pan(self, target_pos, alpha=0.1):
         # Apply exponential moving average smoothing
@@ -146,7 +141,6 @@ class RobotController:
                 self.robot.send_action(self.current_action)
             elif self.visualizer:
                 self.visualizer.update_visualization(self.current_action)
-            print(f"Shoulder Pan Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)
 
     def set_wrist_roll(self, target_pos, alpha=0.1):
         # Apply exponential moving average smoothing
@@ -163,4 +157,24 @@ class RobotController:
                 self.robot.send_action(self.current_action)
             elif self.visualizer:
                 self.visualizer.update_visualization(self.current_action)
-            print(f"Wrist Roll Updated: {smoothed_pos:.1f} (Target: {target_pos:.1f})", flush=True)
+
+    def set_target_joints(self, target_dict, alpha_dict=None):
+        """
+        Receives a dictionary of target joint angles and routes them to 
+        safely smoothed individual setters.
+        """
+        if alpha_dict is None:
+            alpha_dict = {}
+            
+        if "gripper.pos" in target_dict:
+            self.set_gripper(target_dict["gripper.pos"], alpha_dict.get("gripper.pos", 0.2))
+        if "shoulder_lift.pos" in target_dict:
+            self.set_shoulder_lift(target_dict["shoulder_lift.pos"], alpha_dict.get("shoulder_lift.pos", 0.1))
+        if "elbow_flex.pos" in target_dict:
+            self.set_elbow_flex(target_dict["elbow_flex.pos"], alpha_dict.get("elbow_flex.pos", 0.1))
+        if "wrist_flex.pos" in target_dict:
+            self.set_wrist_flex(target_dict["wrist_flex.pos"], alpha_dict.get("wrist_flex.pos", 0.1))
+        if "shoulder_pan.pos" in target_dict:
+            self.set_shoulder_pan(target_dict["shoulder_pan.pos"], alpha_dict.get("shoulder_pan.pos", 0.1))
+        if "wrist_roll.pos" in target_dict:
+            self.set_wrist_roll(target_dict["wrist_roll.pos"], alpha_dict.get("wrist_roll.pos", 0.1))

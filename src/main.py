@@ -1,15 +1,19 @@
 import cv2
 import math
 import time
-from detector import HandGestureDetector
-from robot_controller import RobotController
+from detector import HandGestureDetector, ArmPoseDetector
+from robot.motors_controller import MotorsController
+from robot.robot_controller import RobotController
 
 # --- CONFIGURATION ---
 MIRROR_VIDEO = True  # Set to True if your camera is physically mirrored
+CONTROL_SYSTEM = 1
 # ---------------------
 
 def main():
     detector = HandGestureDetector(model_path="hand_landmarker.task")
+    pose_detector = ArmPoseDetector(model_path="pose_landmarker_full.task")
+
 
     cap = cv2.VideoCapture(0)
 
@@ -25,9 +29,11 @@ def main():
     baseline_box_half_size = 0
     missing_frames = 0
     locked_hand_label = None
+    baseline_elbow_dist = None
 
-    # Connect to the robot automatically, using a context manager
-    with RobotController(port="/dev/ttyACM0") as robot:
+    # Connect to the motors automatically, using a context manager
+    with MotorsController(port="/dev/ttyACM0") as motors:
+        robot = RobotController(motors_controller=motors)
         
         while cap.isOpened():
             success, frame = cap.read()
@@ -47,10 +53,43 @@ def main():
                 cv2.line(frame, (0, i * h // 3), (w, i * h // 3), (80, 80, 80), 1)
 
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            timestamp_ms = int((time.time() - start_time) * 1000)
-            detection_result = detector.process(rgb_frame, timestamp_ms)
+            
+            # In LIVE_STREAM mode, timestamp must be monotonically increasing
+            timestamp_ms = int(time.monotonic() * 1000)
+            
+            try:
+                detector.process_async(rgb_frame, timestamp_ms)
+                pose_detector.process_async(rgb_frame, timestamp_ms)
+            except Exception as e:
+                print(f"Async processing error: {e}")
+            
+            # Fetch latest cached results
+            detection_result = detector.latest_result
+            pose_result = pose_detector.latest_result
+            
+            # --- Visualize Pose Landmarks (Shoulders, Elbows, Wrists) ---
+            if pose_result and pose_result.pose_landmarks:
+                for pose_landmarks in pose_result.pose_landmarks:
+                    # Draw Pose Connections
+                    pose_connections = [(11, 12), (11, 13), (13, 15), (12, 14), (14, 16)]
+                    for (i, j) in pose_connections:
+                        if i < len(pose_landmarks) and j < len(pose_landmarks):
+                            x1, y1 = int(pose_landmarks[i].x * w), int(pose_landmarks[i].y * h)
+                            x2, y2 = int(pose_landmarks[j].x * w), int(pose_landmarks[j].y * h)
+                            cv2.line(frame, (x1, y1), (x2, y2), (255, 150, 0), 2)
 
-            # Handle State Reset if hands disappear or results not yet available
+                    # Draw Joints
+                    joint_ids = [0, 11, 12, 13, 14, 15, 16]
+                    for lm_idx in joint_ids:
+                        if lm_idx < len(pose_landmarks):
+                            lm = pose_landmarks[lm_idx]
+                            px, py = int(lm.x * w), int(lm.y * h)
+                            cv2.circle(frame, (px, py), 8, (255, 100, 0), cv2.FILLED)
+
+                            cv2.putText(frame, str(lm_idx), (px + 15, py),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 200, 0), 1)
+
+            # Handle State Reset if hands disappear
             if not detection_result or not detection_result.hand_landmarks:
                 missing_frames += 1
                 if missing_frames > 20 and state == "ACTIVE":
@@ -58,6 +97,9 @@ def main():
                     state = "IDLE"
                     baseline_center = None
                     locked_hand_label = None
+                    robot.reset_states()
+                    baseline_elbow_dist = None
+                    detector.activation_tracker.reset()
                 
                 cv2.putText(frame, f"STATE: {state}", (20, 40), 
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
@@ -72,8 +114,12 @@ def main():
                     if MIRROR_VIDEO and current_hand_label != "Unknown":
                         current_hand_label = "Left" if current_hand_label == "Right" else "Right"
                     
+                    hand_world_landmarks = detection_result.hand_world_landmarks[hand_idx] if detection_result.hand_world_landmarks else None
+                    if not hand_world_landmarks:
+                        continue
+
                     if state == "IDLE":
-                        if detector.is_fist(hand_landmarks, w, h):
+                        if detector.check_activation_sequence(hand_world_landmarks):
                             center_lm = hand_landmarks[9] 
                             baseline_center = (int(center_lm.x * w), int(center_lm.y * h))
                             wrist = hand_landmarks[0]
@@ -85,7 +131,23 @@ def main():
                                 
                             state = "ACTIVE"
                             locked_hand_label = current_hand_label
-                            print(f"\n>>> FIST DETECTED: Locked onto {locked_hand_label} Hand. <<<")
+                            
+                            # Capture baseline elbow flex distance (hand-wrist to pose-elbow)
+                            if pose_result and pose_result.pose_landmarks:
+                                pl = pose_result.pose_landmarks[0]
+                                is_right = (locked_hand_label == "Right")
+                                if MIRROR_VIDEO:
+                                    elbow_idx = 13 if is_right else 14
+                                else:
+                                    elbow_idx = 14 if is_right else 13
+                                    
+                                if elbow_idx < len(pl):
+                                    el = pl[elbow_idx]
+                                    wr = hand_landmarks[0]
+                                    # Y-axis only distance: wrist above elbow (wr.y < el.y)
+                                    baseline_elbow_dist = max(0, el.y - wr.y)
+
+                            print(f"\n>>> OPEN-CLOSE-OPEN DETECTED: Locked onto {locked_hand_label} Hand. <<<")
                     
                     if state == "ACTIVE" and baseline_center:
                         if locked_hand_label and current_hand_label != locked_hand_label:
@@ -101,177 +163,45 @@ def main():
                         cv2.putText(frame, "CONTROL BOX", (top_left[0], top_left[1] - 10), 
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1, cv2.LINE_AA)
 
-                        # Get and Draw fingertips using the API
-                        tips = detector.get_fingertips(hand_landmarks, w, h)
-                        for name, (lx, ly) in tips.items():
-                            # VISUAL FEEDBACK: Change color to red if outside the control box
-                            is_outside = (lx < top_left[0] or lx > bottom_right[0] or 
-                                          ly < top_left[1] or ly > bottom_right[1])
-                            dot_color = (0, 0, 255) if is_outside else (0, 255, 0)
-                            
-                            cv2.circle(frame, (lx, ly), 10, dot_color, cv2.FILLED)
-                            cv2.putText(frame, name, (lx - 15, ly - 15), 
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, dot_color, 1, cv2.LINE_AA)
-                        
-                        # --- RATE-BASED GRIPPER CONTROL with DEADZONE ---
-                        thumb_x, thumb_y = tips["Thumb"]
-                        index_x, index_y = tips["Index"]
-                        pinch_distance = math.hypot(thumb_x - index_x, thumb_y - index_y)
-                        box_width = baseline_box_half_size * 2
-                        
-                        # Normalize pinch: 0.0 (touching) to 1.0 (full box width)
-                        norm_pinch = pinch_distance / box_width
-                        
-                        # Initial target is the current position
-                        target_pos = robot.current_action["gripper.pos"]
-                        
-                        if norm_pinch < 0.25:
-                            # CLOSE: The tighter the pinch (<25%), the faster it closes
-                            # Speed scale: 0 at 0.25, max at 0.0
-                            intensity = (0.25 - norm_pinch) / 0.25
-                            target_pos -= (5.0 * intensity) # Flipped direction
-                        elif norm_pinch > 0.60:
-                            # OPEN: The wider the hand (>60%), the faster it opens
-                            # Speed scale: 0 at 0.60, max at 1.0 (clamped)
-                            intensity = (min(1.0, norm_pinch) - 0.60) / 0.25
-                            target_pos += (5.0 * intensity) # Flipped direction
-                        
-                        # Apply with smoothing (reusing the smoothed set_gripper method)
-                        robot.set_gripper(target_pos, alpha=0.2)
-                        
-                        # --- MULTI-JOINT CONTROL (Shoulder, Elbow, Wrist) ---
-                        # Finger Selection: 1=Shoulder, 2=Elbow, 3=Wrist
-                        extended = detector.get_extended_fingers(hand_landmarks, w, h)
-                        # We only care about Index, Middle, Ring for joint selection
-                        active_fingers = [f for f in extended if f in ["Index", "Middle", "Ring"]]
-                        num_active = len(active_fingers)
-                        
-                        # Trigger bounds are centered at 'cy' and expand as the hand opens
-                        base_deadzone = baseline_box_half_size * 0.4
-                        dynamic_offset = baseline_box_half_size * 1.2 * norm_pinch
-                        total_deadzone = base_deadzone + dynamic_offset
-                        
-                        upper_bound = cy - total_deadzone
-                        lower_bound = cy + total_deadzone - pinch_distance
-                        
-                        # Visualize trigger bounds (wide lines)
-                        line_half_width = max(baseline_box_half_size, int(total_deadzone * 0.5))
-                        cv2.line(frame, (cx - line_half_width, int(upper_bound)), 
-                                 (cx + line_half_width, int(upper_bound)), (255, 255, 0), 2)
-                        cv2.line(frame, (cx - line_half_width, int(lower_bound)), 
-                                 (cx + line_half_width, int(lower_bound)), (0, 255, 255), 2)
-                        
-                        if num_active > 0:
-                            # Calculate average Y of active selection fingers
-                            avg_y = sum(tips[f][1] for f in active_fingers) / num_active
-                            
-                            # Joint Mapping
-                            if num_active == 1:
-                                joint_name = "shoulder_lift.pos"
-                                set_func = robot.set_shoulder_lift
-                                label = "SHOULDER"
-                            elif num_active == 2:
-                                joint_name = "elbow_flex.pos"
-                                set_func = robot.set_elbow_flex
-                                label = "ELBOW"
-                            else: # 3 or more
-                                joint_name = "wrist_flex.pos"
-                                set_func = robot.set_wrist_flex
-                                label = "WRIST"
-                            
-                            cv2.putText(frame, f"CONTROL: {label}", (cx - baseline_box_half_size, int(upper_bound) - 10), 
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                            
-                            target_pos = robot.current_action[joint_name]
-                            # Flip direction for Elbow and Wrist (non-shoulder motors)
-                            dir_mult = -1.0 if "shoulder" not in joint_name else 1.0
-                            
-                            if avg_y < upper_bound:
-                                # LIFT: Fast if higher
-                                intensity = min(1.0, (upper_bound - avg_y) / (baseline_box_half_size * 0.4))
-                                target_pos += (3.0 * intensity * dir_mult)
-                            elif avg_y > lower_bound:
-                                # LOWER: Fast if lower
-                                intensity = min(1.0, (avg_y - lower_bound) / (baseline_box_half_size * 0.4))
-                                target_pos -= (3.0 * intensity * dir_mult)
-                            
-                            set_func(target_pos, alpha=0.1)
+                        # Draw Hand connections
+                        hand_connections = [
+                            (0, 1), (1, 2), (2, 3), (3, 4),      # thumb
+                            (0, 5), (5, 6), (6, 7), (7, 8),      # index
+                            (5, 9), (9, 10), (10, 11), (11, 12), # middle
+                            (9, 13), (13, 14), (14, 15), (15, 16), # ring
+                            (13, 17), (17, 18), (18, 19), (19, 20), # pinky
+                            (0, 17) # wrist to pinky base
+                        ]
+                        for (i, j) in hand_connections:
+                            x1, y1 = int(hand_landmarks[i].x * w), int(hand_landmarks[i].y * h)
+                            x2, y2 = int(hand_landmarks[j].x * w), int(hand_landmarks[j].y * h)
+                            cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-                        # --- SHOULDER PAN CONTROL ---
-                        # Fixed horizontal bounds (not scaling with pinch)
-                        deadzone_x = baseline_box_half_size * 0.7
-                        left_bound = cx - deadzone_x
-                        right_bound = cx + deadzone_x
+                        # Draw all landmarks
+                        for lm in hand_landmarks:
+                            lx, ly = int(lm.x * w), int(lm.y * h)
+                            cv2.circle(frame, (lx, ly), 5, (0, 255, 0), cv2.FILLED)
                         
-                        # Determine labels and directions based on MIRROR_VIDEO
-                        if MIRROR_VIDEO:
-                            left_label, right_label = "RIGHT", "LEFT"
-                            pan_left_condition = (min(index_x, thumb_x) < left_bound)
-                            pan_right_condition = (max(index_x, thumb_x) > right_bound)
-                            left_intensity = (left_bound - min(index_x, thumb_x)) / (baseline_box_half_size * 0.3)
-                            right_intensity = (max(index_x, thumb_x) - right_bound) / (baseline_box_half_size * 0.3)
-                        else:
-                            left_label, right_label = "LEFT", "RIGHT"
-                            pan_right_condition = (min(index_x, thumb_x) < left_bound)
-                            pan_left_condition = (max(index_x, thumb_x) > right_bound)
-                            right_intensity = (left_bound - min(index_x, thumb_x)) / (baseline_box_half_size * 0.3)
-                            left_intensity = (max(index_x, thumb_x) - right_bound) / (baseline_box_half_size * 0.3)
-
-                        # Visualize horizontal trigger bounds with correct labels for the user's perspective
-                        cv2.line(frame, (int(left_bound), cy - baseline_box_half_size), 
-                                 (int(left_bound), cy + baseline_box_half_size), (0, 0, 255), 2)
-                        cv2.line(frame, (int(right_bound), cy - baseline_box_half_size), 
-                                 (int(right_bound), cy + baseline_box_half_size), (0, 0, 255), 2)
-                        cv2.putText(frame, left_label, (int(left_bound) - 40, cy), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
-                        cv2.putText(frame, right_label, (int(right_bound) + 5, cy), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
-
-                        pan_target = robot.current_action["shoulder_pan.pos"]
-                        if pan_left_condition:
-                            # MOVE LEFT (increase pan)
-                            intensity = min(1.0, left_intensity)
-                            pan_target += (3.0 * intensity)
-                        elif pan_right_condition:
-                            # MOVE RIGHT (decrease pan)
-                            intensity = min(1.0, right_intensity)
-                            pan_target -= (3.0 * intensity)
+                        pose_landmarks = pose_result.pose_landmarks[0] if pose_result and pose_result.pose_landmarks else None
                         
-                        robot.set_shoulder_pan(pan_target, alpha=0.1)
-
-                        # --- WRIST ROLL CONTROL ---
-                        # Use angle between thumb and index
-                        # baseline is vertical (-90 deg in screen coords)
-                        current_angle_rad = math.atan2(index_y - thumb_y, index_x - thumb_x)
-                        current_angle_deg = math.degrees(current_angle_rad)
+                        pose_world_landmarks = pose_result.pose_world_landmarks[0] if pose_result and pose_result.pose_world_landmarks else None
                         
-                        # Target is "Straight Line" (vertical = -90)
-                        # Deviation from neutral vertical
-                        roll_deviation = current_angle_deg + 90
-                        # Normalize to -180 to 180
-                        roll_deviation = (roll_deviation + 180) % 360 - 180
-                        
-                        # Visualize Rotation info
-                        roll_label = f"ROLL: {roll_deviation:+.1f}"
-                        cv2.putText(frame, roll_label, (cx - 40, cy + baseline_box_half_size + 20),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 100, 255), 1)
-                        
-                        roll_target = robot.current_action["wrist_roll.pos"]
-                        # Deadzone of 20 degrees
-                        if abs(roll_deviation) > 25:
-                            # Intensity based on how much you rotate beyond 20 deg
-                            intensity = min(1.0, (abs(roll_deviation) - 20) / 40.0)
-                            # Sign: CW rotation (positive deviation) increases roll? 
-                            # We'll adjust based on mirror. If MIRROR_VIDEO, CW is CW.
-                            if MIRROR_VIDEO:
-                                direction = 1 if roll_deviation > 0 else -1
-                            else:
-                                direction = -1 if roll_deviation > 0 else 1
-                                
-                            # Flip direction (non-shoulder motor)
-                            roll_target -= (5.0 * intensity * direction)
-                        
-                        robot.set_wrist_roll(roll_target, alpha=0.1)
+                        robot.moveRobot(
+                            system=CONTROL_SYSTEM,
+                            hand_landmarks=hand_landmarks,
+                            hand_world_landmarks=hand_world_landmarks,
+                            pose_landmarks=pose_landmarks,
+                            pose_world_landmarks=pose_world_landmarks,
+                            locked_hand_label=locked_hand_label,
+                            baseline_elbow_dist=baseline_elbow_dist,
+                            mirror_video=MIRROR_VIDEO,
+                            w=w,
+                            h=h,
+                            frame=frame,
+                            detector=detector,
+                            baseline_center=baseline_center,
+                            baseline_box_half_size=baseline_box_half_size
+                        )
                         
                 cv2.putText(frame, f"STATE: {state}", (20, 40), 
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0) if state == "ACTIVE" else (0, 0, 255), 2, cv2.LINE_AA)

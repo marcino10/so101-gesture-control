@@ -4,6 +4,7 @@ import math
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
+from mediapipe.tasks.python.vision import RunningMode
 
 def download_model_if_missing(model_path):
     url = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
@@ -20,7 +21,19 @@ class HandGestureDetector:
     def __init__(self, model_path="hand_landmarker.task"):
         download_model_if_missing(model_path)
         base_options = python.BaseOptions(model_asset_path=model_path)
-        options = vision.HandLandmarkerOptions(base_options=base_options, num_hands=2)
+        
+        # Latest detection result returned from callback
+        self.latest_result = None
+        
+        def result_callback(result: vision.HandLandmarkerResult, output_image: mp.Image, timestamp_ms: int):
+            self.latest_result = result
+
+        options = vision.HandLandmarkerOptions(
+            base_options=base_options, 
+            num_hands=2,
+            running_mode=RunningMode.LIVE_STREAM,
+            result_callback=result_callback
+        )
         self.detector = vision.HandLandmarker.create_from_options(options)
 
     def get_extended_fingers(self, hand_landmarks, width, height):
@@ -65,6 +78,7 @@ class HandGestureDetector:
             coords[name] = (int(lm.x * width), int(lm.y * height))
         return coords
 
-    def process(self, rgb_frame):
+    def process(self, rgb_frame, timestamp_ms):
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-        return self.detector.detect(mp_image)
+        self.detector.detect_async(mp_image, timestamp_ms)
+        return self.latest_result

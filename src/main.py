@@ -1,5 +1,6 @@
 import cv2
 import math
+import time
 from detector import HandGestureDetector
 from robot_controller import RobotController
 
@@ -18,6 +19,7 @@ def main():
 
     print("Starting webcam... Press 'q' to quit.")
 
+    start_time = time.time()
     state = "IDLE"
     baseline_center = None
     baseline_box_half_size = 0
@@ -45,10 +47,11 @@ def main():
                 cv2.line(frame, (0, i * h // 3), (w, i * h // 3), (80, 80, 80), 1)
 
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            detection_result = detector.process(rgb_frame)
+            timestamp_ms = int((time.time() - start_time) * 1000)
+            detection_result = detector.process(rgb_frame, timestamp_ms)
 
-            # Handle State Reset if hands disappear
-            if not detection_result.hand_landmarks:
+            # Handle State Reset if hands disappear or results not yet available
+            if not detection_result or not detection_result.hand_landmarks:
                 missing_frames += 1
                 if missing_frames > 20 and state == "ACTIVE":
                     print("\n>>> HAND LOST: Resetting to IDLE mode <<<")
@@ -126,12 +129,12 @@ def main():
                             # CLOSE: The tighter the pinch (<25%), the faster it closes
                             # Speed scale: 0 at 0.25, max at 0.0
                             intensity = (0.25 - norm_pinch) / 0.25
-                            target_pos += (5.0 * intensity) # Max 5 units per frame closure
+                            target_pos -= (5.0 * intensity) # Flipped direction
                         elif norm_pinch > 0.60:
                             # OPEN: The wider the hand (>60%), the faster it opens
                             # Speed scale: 0 at 0.60, max at 1.0 (clamped)
                             intensity = (min(1.0, norm_pinch) - 0.60) / 0.25
-                            target_pos -= (5.0 * intensity) # Max 5 units per frame opening
+                            target_pos += (5.0 * intensity) # Flipped direction
                         
                         # Apply with smoothing (reusing the smoothed set_gripper method)
                         robot.set_gripper(target_pos, alpha=0.2)
@@ -180,14 +183,17 @@ def main():
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                             
                             target_pos = robot.current_action[joint_name]
+                            # Flip direction for Elbow and Wrist (non-shoulder motors)
+                            dir_mult = -1.0 if "shoulder" not in joint_name else 1.0
+                            
                             if avg_y < upper_bound:
                                 # LIFT: Fast if higher
                                 intensity = min(1.0, (upper_bound - avg_y) / (baseline_box_half_size * 0.4))
-                                target_pos += (3.0 * intensity)
+                                target_pos += (3.0 * intensity * dir_mult)
                             elif avg_y > lower_bound:
                                 # LOWER: Fast if lower
                                 intensity = min(1.0, (avg_y - lower_bound) / (baseline_box_half_size * 0.4))
-                                target_pos -= (3.0 * intensity)
+                                target_pos -= (3.0 * intensity * dir_mult)
                             
                             set_func(target_pos, alpha=0.1)
 
@@ -262,7 +268,8 @@ def main():
                             else:
                                 direction = -1 if roll_deviation > 0 else 1
                                 
-                            roll_target += (5.0 * intensity * direction)
+                            # Flip direction (non-shoulder motor)
+                            roll_target -= (5.0 * intensity * direction)
                         
                         robot.set_wrist_roll(roll_target, alpha=0.1)
                         

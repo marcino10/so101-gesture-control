@@ -26,7 +26,7 @@ class RobotController:
         thumb_y, index_y = pose["joint_4"]["y"], pose["joint_8"]["y"]
         pinch_dist_3d = math.hypot(thumb_x - index_x, thumb_y - index_y, thumb_z - index_z)
 
-        if system == 3:
+        if system in [2, 3]:
             target_pos = max(0.0, min(100.0, (pinch_dist_3d - 0.02) / 0.08 * 100))
             if self.robot:
                 self.robot.set_gripper(target_pos, alpha=0.2)
@@ -44,7 +44,7 @@ class RobotController:
         return pinch_dist_3d
 
     def _set_shoulder_pan(self, system, pose_landmarks, locked_hand_label, mirror_video, w, h, frame, thumb_px=0, index_px=0, baseline_box_half_size=100, cx=0, cy=0):
-        if system == 3:
+        if system in [2, 3]:
             if pose_landmarks:
                 pl = pose_landmarks
                 is_physical_right = (locked_hand_label == "Right")
@@ -105,7 +105,7 @@ class RobotController:
                         pan_target += (3.0 * intensity)
                     self.robot.set_shoulder_pan(pan_target, alpha=0.1)
 
-    def _set_elbow_flex(self, system, pose_landmarks, hand_landmarks, baseline_elbow_dist, locked_hand_label, mirror_video, w, h, frame, num_active=0, avg_y=0, upper_bound=0, lower_bound=0, baseline_box_half_size=1, cx=0):
+    def _set_elbow_flex(self, system, pose_landmarks, hand_landmarks, baseline_elbow_dist, locked_hand_label, mirror_video, w, h, frame, num_active=0, avg_y=0, upper_bound=0, lower_bound=0, baseline_box_half_size=1, cx=0, baseline_wrist_y=None):
         if system == 3:
             if pose_landmarks and baseline_elbow_dist is not None:
                 pl = pose_landmarks
@@ -137,6 +137,28 @@ class RobotController:
                     cv2.line(frame, (ex, wy), (wx, wy), (150, 0, 150), 1, cv2.LINE_AA)
                     cv2.putText(frame, f"ELBOW: {flex_target:+.0f} deg (dy:{current_dist:.2f})", (wx + 15, wy + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
 
+        elif system == 2:
+            if baseline_wrist_y is not None:
+                hand_wrist_y = hand_landmarks[0].y
+                dy = hand_wrist_y - baseline_wrist_y
+                available_space = max(0.01, 1.0 - baseline_wrist_y)
+                
+                if dy > 0:
+                    val = -90.0 + (dy / available_space * 1.4) * 180
+                else:
+                    val = -90.0
+                
+                capped_val = max(-90.0, min(90.0, val))
+                elbow_flex_target = round(capped_val / 3.0) * 3.0
+                
+                if self.robot:
+                    self.robot.set_elbow_flex(elbow_flex_target, alpha=0.1)
+                
+                by_px = int(baseline_wrist_y * h)
+                cv2.line(frame, (0, by_px), (w, by_px), (255, 255, 0), 1, cv2.LINE_AA)
+                cv2.putText(frame, "ELBOW BASE", (10, by_px - 10), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+
         elif system == 1:
             if num_active == 2 and baseline_box_half_size:
                 cv2.putText(frame, "CONTROL: ELBOW", (cx - baseline_box_half_size, int(upper_bound) - 10), 
@@ -151,7 +173,7 @@ class RobotController:
                         target_pos += (3.0 * intensity)
                     self.robot.set_elbow_flex(target_pos, alpha=0.1)
 
-    def _set_shoulder_lift(self, system, pose_world_landmarks, pose_landmarks, locked_hand_label, mirror_video, w, h, frame, num_active=0, avg_y=0, upper_bound=0, lower_bound=0, baseline_box_half_size=1, cx=0):
+    def _set_shoulder_lift(self, system, pose_world_landmarks, pose_landmarks, locked_hand_label, mirror_video, w, h, frame, num_active=0, avg_y=0, upper_bound=0, lower_bound=0, baseline_box_half_size=1, cx=0, hand_landmarks=None, baseline_elbow_dist=None):
         if system == 3:
             if pose_world_landmarks:
                 pwl = pose_world_landmarks
@@ -189,6 +211,41 @@ class RobotController:
                         wr_px, wr_py = int(pm.x * w), int(pm.y * h)
                         cv2.putText(frame, f"lift:{lift_target:+.0f} d3d:{dist_3d:.2f}m", (wr_px + 15, wr_py + 40),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 220, 255), 1)
+
+        elif system == 2:
+            if pose_landmarks and baseline_elbow_dist is not None:
+                pl = pose_landmarks
+                is_right = (locked_hand_label == "Right")
+                if mirror_video:
+                    elbow_idx = 13 if is_right else 14
+                else:
+                    elbow_idx = 14 if is_right else 13
+
+                if elbow_idx < len(pl):
+                    elbow_lm = pl[elbow_idx]
+                    wrist_lm = hand_landmarks[0]
+                    current_dist = max(0, elbow_lm.y - wrist_lm.y)
+                    current_dist = min(current_dist, baseline_elbow_dist)
+                    
+                    min_dist_anchor = 0.05
+                    diff = baseline_elbow_dist - current_dist
+                    max_diff = max(0.01, baseline_elbow_dist - min_dist_anchor)
+                    
+                    lift_val = -10.0 + (max(0, diff) / max_diff) * 100.0
+                    lift_target = round(lift_val / 3.0) * 3.0
+                    
+                    if self.robot:
+                        self.robot.set_shoulder_lift(lift_target, alpha=0.1)
+                    
+                    ex, ey = int(elbow_lm.x * w), int(elbow_lm.y * h)
+                    wx, wy = int(wrist_lm.x * w), int(wrist_lm.y * h)
+                    
+                    cv2.line(frame, (ex, ey), (ex, wy), (255, 0, 255), 2)
+                    cv2.line(frame, (ex, wy), (wx, wy), (150, 0, 150), 1, cv2.LINE_AA)
+                    
+                    hud = f"LIFT: {lift_target:+.0f} deg (dy:{current_dist:.2f})"
+                    cv2.putText(frame, hud, (wx + 15, wy + 20),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
 
         elif system == 1:
             if num_active == 1 and baseline_box_half_size:
@@ -240,7 +297,7 @@ class RobotController:
 
     def moveRobot(self, system, hand_landmarks, hand_world_landmarks, pose_landmarks, pose_world_landmarks,
                   locked_hand_label, baseline_elbow_dist, 
-                  mirror_video, w, h, frame, detector, baseline_center=None, baseline_box_half_size=100):
+                  mirror_video, w, h, frame, detector, baseline_center=None, baseline_box_half_size=100, baseline_wrist_y=None):
                   
         pose = detector.extract_full_pose(hand_world_landmarks)
         
@@ -305,6 +362,6 @@ class RobotController:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, dot_color, 1, cv2.LINE_AA)
 
         self._set_shoulder_pan(system, pose_landmarks, locked_hand_label, mirror_video, w, h, frame, thumb_px, index_px, baseline_box_half_size, cx, cy)
-        self._set_elbow_flex(system, pose_landmarks, hand_landmarks, baseline_elbow_dist, locked_hand_label, mirror_video, w, h, frame, num_active, avg_y, upper_bound, lower_bound, baseline_box_half_size, cx)
-        self._set_shoulder_lift(system, pose_world_landmarks, pose_landmarks, locked_hand_label, mirror_video, w, h, frame, num_active, avg_y, upper_bound, lower_bound, baseline_box_half_size, cx)
+        self._set_elbow_flex(system, pose_landmarks, hand_landmarks, baseline_elbow_dist, locked_hand_label, mirror_video, w, h, frame, num_active, avg_y, upper_bound, lower_bound, baseline_box_half_size, cx, baseline_wrist_y=baseline_wrist_y)
+        self._set_shoulder_lift(system, pose_world_landmarks, pose_landmarks, locked_hand_label, mirror_video, w, h, frame, num_active, avg_y, upper_bound, lower_bound, baseline_box_half_size, cx, hand_landmarks=hand_landmarks, baseline_elbow_dist=baseline_elbow_dist)
         self._set_wrist(system, num_active, avg_y, upper_bound, lower_bound, baseline_box_half_size, cx, cy, index_px, index_py, thumb_px, thumb_py, mirror_video, frame)

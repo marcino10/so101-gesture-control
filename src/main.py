@@ -7,7 +7,7 @@ from robot.robot_controller import RobotController
 
 # --- CONFIGURATION ---
 MIRROR_VIDEO = True  # Set to True if your camera is physically mirrored
-CONTROL_SYSTEM = 1
+CONTROL_SYSTEM = 2
 # ---------------------
 
 def main():
@@ -30,6 +30,7 @@ def main():
     missing_frames = 0
     locked_hand_label = None
     baseline_elbow_dist = None
+    baseline_wrist_y = None
 
     # Connect to the motors automatically, using a context manager
     with MotorsController(port="/dev/ttyACM0") as motors:
@@ -99,6 +100,7 @@ def main():
                     locked_hand_label = None
                     robot.reset_states()
                     baseline_elbow_dist = None
+                    baseline_wrist_y = None
                     detector.activation_tracker.reset()
                 
                 cv2.putText(frame, f"STATE: {state}", (20, 40), 
@@ -146,6 +148,7 @@ def main():
                                     wr = hand_landmarks[0]
                                     # Y-axis only distance: wrist above elbow (wr.y < el.y)
                                     baseline_elbow_dist = max(0, el.y - wr.y)
+                                    baseline_wrist_y = wr.y
 
                             print(f"\n>>> OPEN-CLOSE-OPEN DETECTED: Locked onto {locked_hand_label} Hand. <<<")
                     
@@ -200,7 +203,8 @@ def main():
                             frame=frame,
                             detector=detector,
                             baseline_center=baseline_center,
-                            baseline_box_half_size=baseline_box_half_size
+                            baseline_box_half_size=baseline_box_half_size,
+                            baseline_wrist_y=baseline_wrist_y
                         )
                         
                 cv2.putText(frame, f"STATE: {state}", (20, 40), 
